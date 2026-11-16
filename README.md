@@ -55,10 +55,14 @@ download count and age, with links to its page, source code, issue tracker and d
 ## Updates in one click
 
 wam recognizes the addons you already have, including ones you installed by hand or with another
-manager, and tells you which have updates. **Update all** takes care of them; addons you've edited
-yourself are left alone unless you say otherwise.
+manager, and tells you which have updates. Click an update's new version to read what changed in
+every release since yours before you install it. **Update all** takes care of them; addons you've
+edited yourself are left alone unless you say otherwise, and addons you've **pinned** stay at their
+version until you unpin them.
 
-![Installed addons with available updates](screenshots/installed.png)
+![Installed addons with available updates, and one pinned at its version](screenshots/installed.png)
+
+![What's new: the release notes of every version since the installed one](screenshots/changes.png)
 
 ## Built to be trusted with your UI
 
@@ -103,7 +107,7 @@ certutil -hashfile wam.exe SHA256
 
 - Windows 10 (version 1803 or later) or Windows 11, 64-bit.
 - Wago: searching and installing from Wago needs your own Wago API key, which comes with a Wago
-  subscription. Paste it under **Get addons > Wago key**. Everything else works without an account.
+  subscription. Paste it in **Settings** (the cog at the top). Everything else works without an account.
 - Addons whose authors allow downloads only from CurseForge's site open that page in a small window
   (Microsoft Edge WebView2, built into Windows 11 and current Windows 10), or in your browser.
 
