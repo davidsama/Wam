@@ -1,5 +1,20 @@
 # Changes
 
+## 1.2.0
+
+- **wam is open source** now, under the GPL-3.0 license: see the README for building it yourself.
+- **Instant feedback**: removing addons takes them off the list the moment you confirm, updates
+  show "Updating...", and an install shows its progress on the addon's Install button and as a row in
+  Installed, even while wam is still busy with something else.
+- **Faster installs**: installing a big addon takes about half as long.
+- **Faster Check for updates**: addons that haven't changed aren't read again, so a check on a big
+  install takes well under a second.
+- **Get addons appears sooner**: its list shows as soon as CurseForge, WoWInterface and Tukui have
+  answered; Wago's addons join when Wago does. If Wago is busy, last time's Wago addons stay.
+- `wamcli.exe` is no longer included: wam is the app.
+- `%LOCALAPPDATA%\wam\tasks.log` records how long each install, update and removal took, to help
+  when something feels slow.
+
 ## 1.1.0
 
 - **What's new**: click an update's new version to read the release notes of every version since

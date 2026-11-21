@@ -1,0 +1,8 @@
+build/
+cf_key.txt
+
+# Editors and debuggers
+.vs/
+.vscode/
+*.rad
+*.user

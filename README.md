@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="../../releases/latest"><b>⬇ Download the latest wam.exe</b></a>
-  &nbsp;·&nbsp; Windows 10 / 11 &nbsp;·&nbsp; free
+  &nbsp;·&nbsp; Windows 10 / 11 &nbsp;·&nbsp; free and open source
 </p>
 
 ![Get addons: browsing thousands of addons for Retail, with CurseForge and Wago merged into one row each](screenshots/browse.png)
@@ -29,7 +29,7 @@
   rolls back, addons you edited yourself aren't overwritten, and removed addons go to the Recycle
   Bin.
 - **🙅 No account, no ads, no tracking.** wam talks only to the addon sites and sends nothing about
-  you anywhere.
+  you anywhere. It's open source, so you can check.
 - **🧭 Finds your game by itself.** Retail, Classic, Classic Era, Anniversary and the PTR and beta
   clients, on any drive, and every flavor of each install.
 
@@ -111,11 +111,6 @@ certutil -hashfile wam.exe SHA256
 - Addons whose authors allow downloads only from CurseForge's site open that page in a small window
   (Microsoft Edge WebView2, built into Windows 11 and current Windows 10), or in your browser.
 
-### For the command line
-
-`wamcli.exe` does everything from a terminal: list, search, install, update, back up and remove
-addons. Run it without arguments to see its commands.
-
 ## Your data
 
 wam talks only to the addon sites (and the sites hosting their pictures) and to GitHub. It sends no
@@ -124,7 +119,7 @@ statistics and has no telemetry. What it keeps on your PC:
 | Where | What |
 |---|---|
 | `%APPDATA%\wam` | settings (chosen WoW folder, window layout), the Wago key (encrypted for your Windows user), downloads already installed |
-| `%LOCALAPPDATA%\wam` | caches: the addon catalog, pictures, the download window's browser profile |
+| `%LOCALAPPDATA%\wam` | caches: the addon catalog, pictures, your addons' fingerprints, the download window's browser profile; `tasks.log`, how long each install, update or removal took (for reporting a slow moment) |
 | `<WoW>\<flavor>\Interface\wam.json` | which addons wam installed, and from where |
 | `<WoW>\<flavor>\WTF-Backup` | the settings backups |
 
@@ -133,10 +128,38 @@ statistics and has no telemetry. What it keeps on your PC:
 ## Problems and ideas
 
 Please open an [issue](../../issues). Mention your Windows version, the WoW flavor, and the addon
-involved. `wamcli sync` and `wamcli cf-info <addon>` print details that often help.
+involved. If something felt slow, `%LOCALAPPDATA%\wam\tasks.log` says how long each install,
+update or removal waited and took.
+
+## Building from source
+
+wam is plain C with no dependencies beyond Windows: its own JSON parser, zip reader, Direct3D 11
+renderer and UI. You need Visual Studio 2022 or its free
+[Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the C++ workload.
+
+```
+tools\vsenv.bat        sets up the compiler in this window (once per window)
+build.bat release      builds build\wam.exe
+build.bat test         builds and runs the unit tests
+```
+
+CurseForge needs an API key, which the published releases have built in. It isn't in this
+repository: a build of your own works with every other source, and with CurseForge once you get your
+own key from the [CurseForge developer console](https://console.curseforge.com) (put it in
+`cf_key.txt` before building, or set `CURSEFORGE_API_KEY`). Please don't ship builds with the
+release key extracted from wam.exe: it's tied to this app, and CurseForge can revoke it for everyone.
+
+[CONTRIBUTING.md](CONTRIBUTING.md) explains how wam works, how the code is laid out, and how to
+send changes. Security problems: see [SECURITY.md](SECURITY.md).
 
 ## License
 
-wam is free to use and share; see [LICENSE.txt](LICENSE.txt). It is not made by or affiliated with
-Blizzard Entertainment, CurseForge, Wago, WoWInterface or Tukui. World of Warcraft is a trademark of
-Blizzard Entertainment, Inc.
+wam is free software under the [GNU General Public License v3.0](LICENSE): you may use, study,
+share and change it, and versions you distribute must stay under the same license, with their
+source. wam.exe includes Microsoft's WebView2 loader, under its own license (see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). It is not made by or affiliated with Blizzard Entertainment, CurseForge, Wago,
+WoWInterface or Tukui. World of Warcraft is a trademark of Blizzard Entertainment, Inc.
+
+## About
+
+wam is made by davidsama. Designed, reviewed and tested by me, written with an AI coding assistant.
