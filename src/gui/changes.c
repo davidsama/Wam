@@ -32,20 +32,21 @@ static void changes_arrived(ChangesSnap *cs)
     app.changes = cs;
 }
 
-// Keys while the popup is open (it takes them all). Returns 1 if it was open.
-static B32 changes_key(WPARAM wp)
+// Keys while the popup is open (it takes them all, and the typing). Returns 1 if it was open.
+static B32 changes_event(UI_Event *e)
 {
     if (!app.changes_open) return 0;
+    if (e->kind != UI_EVENT_KEY) return 1;
     F32 page = ui.height * 0.5f, line = 48 * ui.scale;
     UI_Scroll *sc = &app.changes_scroll;
-    if (wp == VK_ESCAPE) changes_close();
-    else if (wp == VK_DOWN) sc->target += line;
-    else if (wp == VK_UP) sc->target -= line;
-    else if (wp == VK_NEXT || wp == VK_SPACE) sc->target += page;
-    else if (wp == VK_PRIOR) sc->target -= page;
-    else if (wp == VK_HOME) sc->target = 0;
-    else if (wp == VK_END) sc->target = 1e9f;
-    ui_request_frame();
+    UI_Key k = e->key;
+    if (k == UI_KEY_ESCAPE) changes_close();
+    else if (k == UI_KEY_DOWN) sc->target += line;
+    else if (k == UI_KEY_UP) sc->target -= line;
+    else if (k == UI_KEY_PAGE_DOWN || k == UI_KEY_SPACE) sc->target += page;
+    else if (k == UI_KEY_PAGE_UP) sc->target -= page;
+    else if (k == UI_KEY_HOME) sc->target = 0;
+    else if (k == UI_KEY_END) sc->target = 1e9f;
     return 1;
 }
 

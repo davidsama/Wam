@@ -1,4 +1,4 @@
-// ui_win32.c - the window for the UI library: creation, DPI, mouse input, frame scheduling,
+// ui_win32.c - the window for the UI library: creation, DPI, mouse and key input, frame scheduling,
 // deferred work, and the Windows services that can't run inside a frame. See ui.h.
 //
 // Rendering is event-driven: a frame is drawn when input or the app asks for one
@@ -26,6 +26,64 @@ static B32 ui_sizing;   // between WM_ENTERSIZEMOVE and WM_EXITSIZEMOVE (an edge
 
 static B32 ui_frame_wanted = 1;   // someone asked for a frame since the last one (not just Windows repainting)
 static void ui_request_frame(void) { ui_frame_wanted = 1; if (ui_hwnd) InvalidateRect(ui_hwnd, 0, FALSE); }
+
+//- Keys and text: WM_KEYDOWN and WM_CHAR become UI_Events, queued here until the next frame takes
+// them into ui.events (so one arriving while a frame runs waits for the next instead of being lost).
+
+static UI_Event ui_queued[UI_EVENT_MAX];
+static U32 ui_queued_count;
+static U16 ui_high_surrogate; // the first half of a character outside the BMP (WM_CHAR sends two)
+
+static void ui_queue_event(UI_Event e)
+{
+    if (ui_queued_count < UI_EVENT_MAX) ui_queued[ui_queued_count++] = e;
+    ui_request_frame();
+}
+
+static UI_Key ui_key_from_vk(WPARAM vk)
+{
+    if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z')) return (UI_Key)vk;
+    if (vk >= VK_F1 && vk <= VK_F12) return (UI_Key)(UI_KEY_F1 + (vk - VK_F1));
+    switch (vk) {
+        case VK_BACK: return UI_KEY_BACKSPACE;
+        case VK_TAB: return UI_KEY_TAB;
+        case VK_RETURN: return UI_KEY_RETURN;
+        case VK_ESCAPE: return UI_KEY_ESCAPE;
+        case VK_SPACE: return UI_KEY_SPACE;
+        case VK_DELETE: return UI_KEY_DELETE;
+        case VK_LEFT: return UI_KEY_LEFT;
+        case VK_RIGHT: return UI_KEY_RIGHT;
+        case VK_UP: return UI_KEY_UP;
+        case VK_DOWN: return UI_KEY_DOWN;
+        case VK_PRIOR: return UI_KEY_PAGE_UP;
+        case VK_NEXT: return UI_KEY_PAGE_DOWN;
+        case VK_HOME: return UI_KEY_HOME;
+        case VK_END: return UI_KEY_END;
+        case VK_OEM_COMMA: return UI_KEY_COMMA;
+    }
+    return UI_KEY_NONE;
+}
+
+static U32 ui_mods_now(void)
+{
+    return (GetKeyState(VK_CONTROL) < 0 ? UI_MOD_CTRL : 0) | (GetKeyState(VK_SHIFT) < 0 ? UI_MOD_SHIFT : 0) |
+           (GetKeyState(VK_MENU) < 0 ? UI_MOD_ALT : 0);
+}
+
+// One WM_CHAR code: printable characters become text (surrogate pairs joined). The control codes
+// it also sends (Enter, Backspace, Esc, Ctrl+letter) are already key presses.
+static void ui_queue_char(U32 c)
+{
+    if (c >= 0xD800 && c <= 0xDBFF) { ui_high_surrogate = (U16)c; return; }
+    if (c >= 0xDC00 && c <= 0xDFFF) {
+        if (!ui_high_surrogate) return;
+        c = 0x10000 + ((U32)(ui_high_surrogate - 0xD800) << 10) + (c - 0xDC00);
+    }
+    ui_high_surrogate = 0;
+    if (c < 0x20 || c == 0x7F) return;
+    UI_Event e = { UI_EVENT_TEXT, UI_KEY_NONE, ui_mods_now(), c };
+    ui_queue_event(e);
+}
 
 //- The caption: the app's own title bar
 //
@@ -199,6 +257,9 @@ static B32 ui_frame(void)
     r_begin_frame();
     memset(&ui_cap_next, 0, sizeof(ui_cap_next));
     ui.tip = str8(0, 0);
+    memcpy(ui.events, ui_queued, ui_queued_count * sizeof(UI_Event));
+    ui.event_count = ui_queued_count;
+    ui_queued_count = 0;
     B32 again = ui_app->frame();
     ui_tooltip_draw();
     ui_cap_next.overlay = ui.overlay;
@@ -228,6 +289,7 @@ static B32 ui_frame(void)
     }
     ui.in.pressed = ui.in.released = 0;
     ui.in.wheel = 0;
+    ui.event_count = 0;
     in_frame = 0;
     return again;
 }
@@ -272,8 +334,12 @@ static LRESULT CALLBACK ui_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 temp_end(t);
                 ui_request_frame();
                 return 0;
+            } else {
+                UI_Event e = { UI_EVENT_KEY, ui_key_from_vk(wp), ui_mods_now(), 0 };
+                if (e.key != UI_KEY_NONE) ui_queue_event(e);
+                return 0;
             }
-            break;
+        case WM_CHAR: ui_queue_char((U32)wp); return 0;
         case WM_SIZE:
             // Draw the new size right away instead of waiting for WM_PAINT, which only comes once the
             // queue is empty: while the edge is being dragged sizes arrive faster than that, and

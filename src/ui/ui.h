@@ -2,7 +2,8 @@
 //
 // Nothing here knows about the app using it. Each frame the app calls widgets; a widget draws
 // itself with ui.theme / ui.font and returns what the user did with it (clicked, toggled...).
-// Mouse state lives in ui.in, filled by the window layer; the frame arena is cleared every frame.
+// Mouse state lives in ui.in and keys and typed text in ui.events, both filled by the window layer;
+// the frame arena is cleared every frame.
 //
 //   ui.c        state, geometry, theme, fonts, ornaments, widgets, text editing
 //   ui_image.c  pictures from URLs (icons, thumbnails), fetched and decoded in the background
@@ -44,13 +45,41 @@ typedef struct UI_Input {
     F32 wheel;               // wheel notches this frame (positive = away from the user)
 } UI_Input;
 
+// Keys and typed text since the last frame, in the order they came (ui.events). A key press and the
+// text it types are two events: Space is a UI_KEY_SPACE press and a ' ' of text. Text events are
+// printable characters only; Enter, Backspace, Esc and Ctrl+letter come as key presses.
+typedef enum UI_Key {
+    UI_KEY_NONE = 0,
+    // '0'..'9' and 'A'..'Z' are themselves.
+    UI_KEY_BACKSPACE = 0x100, UI_KEY_TAB, UI_KEY_RETURN, UI_KEY_ESCAPE, UI_KEY_SPACE, UI_KEY_DELETE,
+    UI_KEY_LEFT, UI_KEY_RIGHT, UI_KEY_UP, UI_KEY_DOWN, UI_KEY_PAGE_UP, UI_KEY_PAGE_DOWN, UI_KEY_HOME, UI_KEY_END,
+    UI_KEY_COMMA,
+    UI_KEY_F1, UI_KEY_F2, UI_KEY_F3, UI_KEY_F4, UI_KEY_F5, UI_KEY_F6,
+    UI_KEY_F7, UI_KEY_F8, UI_KEY_F9, UI_KEY_F10, UI_KEY_F11, UI_KEY_F12,
+} UI_Key;
+
+enum { UI_MOD_CTRL = 1, UI_MOD_SHIFT = 2, UI_MOD_ALT = 4 };
+
+typedef enum UI_EventKind { UI_EVENT_KEY, UI_EVENT_TEXT } UI_EventKind;
+
+typedef struct UI_Event {
+    UI_EventKind kind;
+    UI_Key key;              // UI_EVENT_KEY: what was pressed (also each auto-repeat)
+    U32 mods;                // UI_MOD_*: held at the time
+    U32 codepoint;           // UI_EVENT_TEXT: what was typed
+} UI_Event;
+
+#define UI_EVENT_MAX 64
+
 typedef struct UI_State {
     F32 scale;               // DPI scale: 1.0 at 96 dpi
     UI_Theme theme;
     UI_Fonts font;
     Arena *font_arena;
     UI_Input in;
-    Arena *frame_arena;      // scratch for this frame, cleared before each one
+    UI_Event events[UI_EVENT_MAX]; // this frame's keys and text (more than that between two frames are dropped)
+    U32 event_count;
+    Arena *frame_arena;     // scratch for this frame, cleared before each one
     F32 width, height;       // client size in pixels
     Rect clip;               // widgets ignore the mouse outside it (e.g. the visible part of a list)
     Rect overlay;            // a popup layer such as a dropdown: it hides the mouse from what's below
@@ -149,15 +178,15 @@ static void ui_overlay_end(void);
 
 //- Text editing
 
-typedef struct UI_TextBuf { char s[256]; U32 len; U16 high_surrogate; } UI_TextBuf;
+typedef struct UI_TextBuf { char s[256]; U32 len; } UI_TextBuf;
 static String8 ui_text(UI_TextBuf *t);
 static void ui_text_insert(UI_TextBuf *t, U32 codepoint);
 static void ui_text_backspace(UI_TextBuf *t);     // removes one UTF-8 character
 static void ui_text_clear(UI_TextBuf *t);         // also wipes the bytes (it may have held a secret)
 static void ui_text_paste(UI_TextBuf *t, String8 utf8);
-// Feeds one WM_CHAR code: printable characters, surrogate pairs, Backspace, Ctrl+Backspace (clears).
-// Enter, Escape and other control codes are left to the caller. Returns 1 if the text changed.
-static B32  ui_text_char(UI_TextBuf *t, U32 wm_char);
+// Edits t with one event: typed text, Backspace, Ctrl+Backspace (clears), Ctrl+V (pastes).
+// Returns 1 if it used the event; Enter, Escape and the other keys are left to the caller.
+static B32  ui_text_edit(UI_TextBuf *t, UI_Event *e);
 // A one-line field: text (or one dot per character when masked) with a caret, or the hint when empty.
 static void ui_text_field(Rect r, UI_TextBuf *t, String8 hint, B32 masked, V4 border);
 
@@ -171,7 +200,8 @@ typedef struct UI_App {
     B32 accept_files;               // drag and drop from Explorer
     // Draws one frame between the renderer's begin/end. Return 1 to get another frame (animation).
     B32 (*frame)(void);
-    // Everything the window layer doesn't handle itself: keys, characters, timers, WM_APP messages.
+    // Everything the window layer doesn't handle itself: timers, WM_APP messages. (Keys and typed
+    // text don't come here: they're in ui.events, for the next frame.)
     // Set *handled to stop the default processing.
     LRESULT (*message)(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, B32 *handled);
     void (*file_dropped)(String8 path);   // each dropped file

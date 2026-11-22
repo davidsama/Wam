@@ -94,23 +94,15 @@ static void settings_save_wago(B32 remove)
     ui_text_clear(&app.wago_entry);
 }
 
-// Keys while the popup is open (it takes them all). Returns 1 if it was open.
-static B32 settings_key(WPARAM wp, B32 ctrl)
+// Keys and typing while the popup is open (it takes them all): the Wago key field.
+// Returns 1 if it was open.
+static B32 settings_event(UI_Event *e)
 {
     if (!app.settings_open) return 0;
-    if (wp == VK_ESCAPE) settings_close();
-    else if (ctrl && wp == 'V' && !app.wago_from_env) ui_text_paste(&app.wago_entry, ui_clipboard_text(ui.frame_arena));
-    ui_request_frame();
-    return 1;
-}
-
-static B32 settings_char(U32 c)
-{
-    if (!app.settings_open) return 0;
-    if (app.wago_from_env) return 1;
-    if (c == '\r') settings_save_wago(0);
-    else if (c != 0x16) { ui_text_char(&app.wago_entry, c); app.settings_note[0] = 0; } // (Ctrl+V is a key)
-    ui_request_frame();
+    if (e->kind == UI_EVENT_KEY && e->key == UI_KEY_ESCAPE) { settings_close(); return 1; }
+    if (app.wago_from_env) return 1; // (the field is off: the key comes from the environment)
+    if (e->kind == UI_EVENT_KEY && e->key == UI_KEY_RETURN) settings_save_wago(0);
+    else if (ui_text_edit(&app.wago_entry, e)) app.settings_note[0] = 0;
     return 1;
 }
 

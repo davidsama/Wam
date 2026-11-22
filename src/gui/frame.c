@@ -2,6 +2,8 @@
 // actions), the remove confirmation bar, the content panel with the current view, and the status bar.
 // Also switching flavors and installs. Part of main_gui.c's unity build.
 
+static void app_event(UI_Event *e); // main_gui.c: keys and typing
+
 //- Frame
 
 static void switch_flavor(int f)
@@ -100,6 +102,8 @@ static B32 app_frame(void)
     F32 s = ui.scale;
     F32 W = ui.width, H = ui.height;
     UI_Input *in = &ui.in;
+    // Keys and typing since the last frame first, so this frame shows what they did.
+    for (U32 i = 0; i < ui.event_count; i += 1) app_event(&ui.events[i]);
     Snapshot *snap = app.snap;
     B32 animating = 0;
     // The picture viewer covers the window: nothing under it sees the mouse.

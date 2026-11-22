@@ -481,7 +481,6 @@ static void ui_text_clear(UI_TextBuf *t)
 {
     SecureZeroMemory(t->s, sizeof(t->s));
     t->len = 0;
-    t->high_surrogate = 0;
 }
 
 static void ui_text_paste(UI_TextBuf *t, String8 utf8)
@@ -493,23 +492,17 @@ static void ui_text_paste(UI_TextBuf *t, String8 utf8)
     }
 }
 
-static B32 ui_text_char(UI_TextBuf *t, U32 c)
+static B32 ui_text_edit(UI_TextBuf *t, UI_Event *e)
 {
-    U32 before = t->len;
-    if (c >= 0xD800 && c <= 0xDBFF) { t->high_surrogate = (U16)c; return 0; }
-    if (c >= 0xDC00 && c <= 0xDFFF) {
-        if (t->high_surrogate) ui_text_insert(t, 0x10000 + ((t->high_surrogate - 0xD800) << 10) + (c - 0xDC00));
-        t->high_surrogate = 0;
-    } else if (c == '\b') {
-        ui_text_backspace(t);
-    } else if (c == 0x7F) {
-        t->len = 0; // Ctrl+Backspace
-    } else if (c >= 0x20) {
-        ui_text_insert(t, c);
-    } else {
-        return 0;
+    if (e->kind == UI_EVENT_TEXT) { ui_text_insert(t, e->codepoint); return 1; }
+    B32 ctrl = (e->mods & UI_MOD_CTRL) != 0;
+    if (e->key == UI_KEY_BACKSPACE) {
+        if (ctrl) t->len = 0;
+        else ui_text_backspace(t);
+        return 1;
     }
-    return t->len != before || c >= 0x20;
+    if (ctrl && e->key == 'V') { ui_text_paste(t, ui_clipboard_text(ui.frame_arena)); return 1; }
+    return 0;
 }
 
 static void ui_text_field(Rect r, UI_TextBuf *t, String8 hint, B32 masked, V4 border)

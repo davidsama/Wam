@@ -832,19 +832,19 @@ static void browse_select(S64 index)
 }
 
 // Up / Down / Page Up / Page Down / Home / End in Get addons. Returns 1 if it used the key.
-static B32 browse_key(WPARAM wp, B32 ctrl)
+static B32 browse_key(UI_Key key, B32 ctrl)
 {
     if (!app.order_count) return 0;
     S64 page = 8, i = app.sel_index;
-    switch (wp) {
-        case VK_DOWN:  browse_select(i < 0 ? 0 : Min(i + 1, (S64)app.order_count - 1)); return 1;
-        case VK_UP:    browse_select(i <= 0 ? -1 : i - 1); return 1; // up from the first row: back to the field
-        case VK_NEXT:  browse_select(Min(Max(i, 0) + page, (S64)app.order_count - 1)); return 1;
-        case VK_PRIOR: browse_select(Max(i - page, 0)); return 1;
-        case VK_HOME:  if (ctrl) { browse_select(0); return 1; } return 0;
-        case VK_END:   if (ctrl) { browse_select((S64)app.order_count - 1); return 1; } return 0;
+    switch (key) {
+        case UI_KEY_DOWN:      browse_select(i < 0 ? 0 : Min(i + 1, (S64)app.order_count - 1)); return 1;
+        case UI_KEY_UP:        browse_select(i <= 0 ? -1 : i - 1); return 1; // up from the first row: back to the field
+        case UI_KEY_PAGE_DOWN: browse_select(Min(Max(i, 0) + page, (S64)app.order_count - 1)); return 1;
+        case UI_KEY_PAGE_UP:   browse_select(Max(i - page, 0)); return 1;
+        case UI_KEY_HOME:      if (ctrl) { browse_select(0); return 1; } return 0;
+        case UI_KEY_END:       if (ctrl) { browse_select((S64)app.order_count - 1); return 1; } return 0;
+        default: return 0;
     }
-    return 0;
 }
 
 static B32 browse_enter(void)
@@ -1054,14 +1054,15 @@ static void viewer_step(int d)
     ui_request_frame();
 }
 
-// Keys while the viewer is open (it takes them all). Returns 1 if it was open.
-static B32 viewer_key(WPARAM wp)
+// Keys while the viewer is open (it takes them all, and the typing). Returns 1 if it was open.
+static B32 viewer_event(UI_Event *e)
 {
     if (!app.viewer_open) return 0;
-    if (wp == VK_ESCAPE) app.viewer_open = 0;
-    else if (wp == VK_LEFT || wp == VK_PRIOR) viewer_step(-1);
-    else if (wp == VK_RIGHT || wp == VK_NEXT || wp == VK_SPACE) viewer_step(1);
-    ui_request_frame();
+    if (e->kind != UI_EVENT_KEY) return 1;
+    UI_Key k = e->key;
+    if (k == UI_KEY_ESCAPE) app.viewer_open = 0;
+    else if (k == UI_KEY_LEFT || k == UI_KEY_PAGE_UP) viewer_step(-1);
+    else if (k == UI_KEY_RIGHT || k == UI_KEY_PAGE_DOWN || k == UI_KEY_SPACE) viewer_step(1);
     return 1;
 }
 

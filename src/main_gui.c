@@ -249,67 +249,61 @@ static void waiting_match(DownloadsSnap *ds)
     }
 }
 
-//- Window callbacks (the UI library's window calls these)
+//- Keys and typing (ui.events, at the start of each frame)
 
-static void app_key(WPARAM wp)
+// Enter in Get addons, with no row selected: installs what the field links to, or searches now.
+// (Clearing the field after an install isn't a new search.)
+static void search_enter(void)
 {
-    B32 ctrl = GetKeyState(VK_CONTROL) < 0;
-    char before[256]; U32 before_len = app.query.len; memcpy(before, app.query.s, sizeof(before));
-    if (viewer_key(wp)) return; // the picture viewer takes every key while it's open
-    if (settings_key(wp, ctrl)) return; // so does the settings popup
-    if (changes_key(wp)) return;        // and the changes popup
-    if (ctrl && wp == VK_OEM_COMMA) { settings_open(); return; }
-    if (app.view == VIEW_SEARCH && browse_key(wp, ctrl)) { ui_request_frame(); return; }
-    if (wp == VK_F5) push_task(TASK_REFRESH, str8(0, 0));
-    if (ctrl && wp == 'F') app.view = VIEW_SEARCH;
-    if (ctrl && wp == 'V' && app.view == VIEW_SEARCH) ui_text_paste(&app.query, ui_clipboard_text(ui.frame_arena));
-    if (ctrl && wp == 'A' && app.view == VIEW_INSTALLED && app.snap) {
-        for (U64 i = 0; i < app.snap->row_count; i += 1) keyset_add(&app.selected, app.snap->rows[i].key);
+    String8 q = str8_trim(ui_text(&app.query));
+    String8 id = mgr_parse_spec(ui.frame_arena, q);
+    B32 is_link = id.size && (!id_is(id, "cf:") || id_is(q, "cf:")); // plain numbers stay a search
+    if (is_link) {
+        SearchResult *known = cat_find(&app.cat, id); // its name and picture, if the catalog has it
+        feedback_install(push_task(TASK_INSTALL, q), id, known ? known->name : id_rest(id), known ? known->icon : str8(0, 0));
+        app.query.len = 0;
+    } else if (q.size) {
+        // Search now (with a status message) instead of waiting for the typing pause.
+        KillTimer(app.hwnd, TIMER_SUGGEST);
+        suggest_due_ms = 0;
+        paging_sync();
+        Task t = make_task(TASK_SEARCH, q, 0, app.flavor);
+        t.sort = browse_sort();
+        dispatch_task(t);
+        copy_cstr(app.sugg_last_query, sizeof(app.sugg_last_query), q);
+        app.sugg_last_sort = t.sort;
     }
-    if (wp == VK_ESCAPE) {
-        if (app.removing.count) keyset_clear(&app.removing);    // first: cancel a pending remove
-        else if (app.view == VIEW_SEARCH && app.sel_id[0]) { app.sel_id[0] = 0; app.sel_index = -1; } // first Esc: the selection
-        else if (app.view == VIEW_SEARCH) app.query.len = 0;
-        else keyset_clear(&app.selected);
-    }
-    if (app.view == VIEW_SEARCH && (app.query.len != before_len || memcmp(before, app.query.s, sizeof(before)))) query_changed();
-    ui_request_frame();
 }
 
-static void app_char(U32 c)
+static void app_event(UI_Event *e)
 {
-    if (settings_char(c)) return; // the settings popup takes the typing while it's open
-    if (app.changes_open) return;
-    if (app.view != VIEW_SEARCH || app.viewer_open) return; // (the viewer takes the keys)
+    // The picture viewer takes every key while it's open; so do the settings and changes popups.
+    if (viewer_event(e) || settings_event(e) || changes_event(e)) return;
+    B32 search = app.view == VIEW_SEARCH;
     char before[256]; U32 before_len = app.query.len; memcpy(before, app.query.s, sizeof(before));
-    if (c == '\r' && browse_enter()) {
-        // Enter on the selected row installed it.
-    } else if (c == '\r') {
-        String8 q = str8_trim(ui_text(&app.query));
-        String8 id = mgr_parse_spec(ui.frame_arena, q);
-        B32 is_link = id.size && (!id_is(id, "cf:") || id_is(q, "cf:")); // plain numbers stay a search
-        before_len = app.query.len; memcpy(before, app.query.s, sizeof(before));
-        if (is_link) {
-            SearchResult *known = cat_find(&app.cat, id); // its name and picture, if the catalog has it
-            feedback_install(push_task(TASK_INSTALL, q), id, known ? known->name : id_rest(id), known ? known->icon : str8(0, 0));
-            app.query.len = 0;
-        } else if (q.size) {
-            // Search now (with a status message) instead of waiting for the typing pause.
-            KillTimer(app.hwnd, TIMER_SUGGEST);
-            suggest_due_ms = 0;
-            paging_sync();
-            Task t = make_task(TASK_SEARCH, q, 0, app.flavor);
-            t.sort = browse_sort();
-            dispatch_task(t);
-            copy_cstr(app.sugg_last_query, sizeof(app.sugg_last_query), q);
-            app.sugg_last_sort = t.sort;
+    if (e->kind == UI_EVENT_KEY) {
+        UI_Key k = e->key;
+        B32 ctrl = (e->mods & UI_MOD_CTRL) != 0;
+        if (ctrl && k == UI_KEY_COMMA) { settings_open(); return; }
+        if (search && browse_key(k, ctrl)) return;
+        if (search && k == UI_KEY_RETURN && !browse_enter()) { search_enter(); return; } // (browse_enter: the selected row)
+        if (k == UI_KEY_F5) push_task(TASK_REFRESH, str8(0, 0));
+        if (ctrl && k == 'F') app.view = VIEW_SEARCH;
+        if (ctrl && k == 'A' && app.view == VIEW_INSTALLED && app.snap) {
+            for (U64 i = 0; i < app.snap->row_count; i += 1) keyset_add(&app.selected, app.snap->rows[i].key);
         }
-    } else if (c != 0x16) { // Ctrl+V arrives as 0x16 too; it's handled as a key
-        ui_text_char(&app.query, c);
+        if (k == UI_KEY_ESCAPE) {
+            if (app.removing.count) keyset_clear(&app.removing);    // first: cancel a pending remove
+            else if (search && app.sel_id[0]) { app.sel_id[0] = 0; app.sel_index = -1; } // first Esc: the selection
+            else if (search) app.query.len = 0;
+            else keyset_clear(&app.selected);
+        }
     }
-    if ((app.query.len != before_len || memcmp(before, app.query.s, sizeof(before)))) query_changed();
-    ui_request_frame();
+    if (search) ui_text_edit(&app.query, e); // typing, Backspace, Ctrl+V
+    if (app.view == VIEW_SEARCH && (app.query.len != before_len || memcmp(before, app.query.s, sizeof(before)))) query_changed();
 }
+
+//- Window callbacks (the UI library's window calls these)
 
 static void app_file_dropped(String8 path)
 {
@@ -321,14 +315,12 @@ static void app_file_dropped(String8 path)
 // Back from the browser? Look for new downloads (cheap: results are cached per file).
 static void app_activated(void) { request_downloads_scan(); }
 
-// Keys, characters, the suggestion timer, and the workers' results.
+// The suggestion timer and the workers' results.
 static LRESULT app_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, B32 *handled)
 {
     (void)hwnd;
     *handled = 1;
     switch (msg) {
-        case WM_KEYDOWN: app_key(wp); return 0;
-        case WM_CHAR: app_char((U32)wp); return 0;
         case WM_TIMER: if (wp == TIMER_SUGGEST) suggest_timer(); else if (wp == TIMER_DETAILS) details_timer(); return 0;
         case WM_APP_SUGGEST: {
             SearchSnap *ss = (SearchSnap *)lp;
