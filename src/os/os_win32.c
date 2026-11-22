@@ -1,5 +1,11 @@
 // os_win32.c - expects <windows.h> to be included by the unity build entry point.
+// The desktop parts (clipboard, shell open, picture decoding) also link user32, shell32, ole32
+// and windowscodecs; a program that doesn't call them needs none of these.
 #include <wincrypt.h>
+#ifndef COBJMACROS
+#define COBJMACROS
+#endif
+#include <wincodec.h>
 
 static void *os_reserve(U64 size) { return VirtualAlloc(0, size, MEM_RESERVE, PAGE_READWRITE); }
 static B32 os_commit(void *ptr, U64 size) { return VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE) != 0; }
@@ -404,8 +410,12 @@ static U64 os_now_us(void)
     if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
-    return (U64)(now.QuadPart * 1000000 / freq.QuadPart);
+    // In two steps: now * 1000000 alone overflows after about ten days of uptime (10 MHz counter).
+    U64 t = (U64)now.QuadPart, f = (U64)freq.QuadPart;
+    return t / f * 1000000 + t % f * 1000000 / f;
 }
+
+static U64 os_now_ms(void) { return os_now_us() / 1000; }
 
 typedef struct OS_ThreadStart { OS_ThreadFunc *fn; void *param; } OS_ThreadStart;
 
@@ -517,4 +527,226 @@ static String8List os_installed_program_dirs(Arena *a, char *name_prefix)
     }
     scratch_end(scratch);
     return result;
+}
+
+//- Threads talking to each other
+
+static void os_mutex_lock(OS_Mutex *m) { AcquireSRWLockExclusive((PSRWLOCK)&m->v); }
+static void os_mutex_unlock(OS_Mutex *m) { ReleaseSRWLockExclusive((PSRWLOCK)&m->v); }
+
+static OS_Semaphore os_semaphore_alloc(U32 max_count) { OS_Semaphore s = { CreateSemaphoreW(0, 0, (LONG)max_count, 0) }; return s; }
+static void os_semaphore_signal(OS_Semaphore s) { ReleaseSemaphore(s.h, 1, 0); }
+static void os_semaphore_wait(OS_Semaphore s) { WaitForSingleObject(s.h, INFINITE); }
+
+static OS_Event os_event_alloc(void) { OS_Event e = { CreateEventW(0, FALSE, FALSE, 0) }; return e; }
+static void os_event_signal(OS_Event e) { SetEvent(e.h); }
+static void os_event_wait(OS_Event e) { WaitForSingleObject(e.h, INFINITE); }
+
+static S32 os_atomic_inc(volatile S32 *p) { return (S32)InterlockedIncrement((volatile LONG *)p); }
+static void os_atomic_store(volatile S32 *p, S32 v) { InterlockedExchange((volatile LONG *)p, (LONG)v); }
+
+static void *os_alloc(U64 size) { return HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)size); }
+static void os_free(void *p) { if (p) HeapFree(GetProcessHeap(), 0, p); }
+static void os_secure_zero(void *p, U64 size) { SecureZeroMemory(p, (SIZE_T)size); }
+
+//- Time
+
+static OS_DateTime os_date_from_systemtime(SYSTEMTIME st)
+{
+    OS_DateTime d = { st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond };
+    return d;
+}
+
+static OS_DateTime os_local_now(void)
+{
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    return os_date_from_systemtime(st);
+}
+
+static OS_DateTime os_utc_from_unix(S64 unix_secs)
+{
+    OS_DateTime d = { 0 };
+    if (unix_secs <= 0) return d;
+    U64 ft = (U64)unix_secs * 10000000ull + 116444736000000000ull;
+    FILETIME f = { (DWORD)ft, (DWORD)(ft >> 32) };
+    SYSTEMTIME st;
+    if (FileTimeToSystemTime(&f, &st)) d = os_date_from_systemtime(st);
+    return d;
+}
+
+//- More files
+
+static B32 os_append_file(String8 path, String8 data)
+{
+    Temp scratch = scratch_begin(0);
+    HANDLE f = CreateFileW((WCHAR *)os_path16(scratch.arena, path).str, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_ALWAYS, 0, 0);
+    scratch_end(scratch);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    DWORD wrote = 0;
+    B32 ok = WriteFile(f, data.str, (DWORD)data.size, &wrote, 0) && wrote == data.size;
+    CloseHandle(f);
+    return ok;
+}
+
+static U64 os_file_size(String8 path)
+{
+    Temp scratch = scratch_begin(0);
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    B32 ok = GetFileAttributesExW((WCHAR *)os_path16(scratch.arena, path).str, GetFileExInfoStandard, &fa);
+    scratch_end(scratch);
+    return ok ? ((U64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow : 0;
+}
+
+static B32 os_delete_file(String8 path)
+{
+    Temp scratch = scratch_begin(0);
+    B32 ok = DeleteFileW((WCHAR *)os_path16(scratch.arena, path).str);
+    scratch_end(scratch);
+    return ok;
+}
+
+static OS_DirWatch os_dir_watch_open(String8List dirs)
+{
+    OS_DirWatch w = { 0 };
+    Temp scratch = scratch_begin(0);
+    for (String8Node *d = dirs.first; d && w.count < ArrayCount(w.h); d = d->next) {
+        HANDLE h = FindFirstChangeNotificationW((WCHAR *)os_str16_from_8(scratch.arena, d->string).str, FALSE,
+                                                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE);
+        if (h != INVALID_HANDLE_VALUE) w.h[w.count++] = h;
+    }
+    scratch_end(scratch);
+    return w;
+}
+
+static B32 os_dir_watch_wait(OS_DirWatch *w, U32 timeout_ms)
+{
+    if (!w->count) return 0;
+    DWORD r = WaitForMultipleObjects(w->count, (HANDLE *)w->h, FALSE, timeout_ms);
+    if (r >= WAIT_OBJECT_0 + w->count) return 0;
+    FindNextChangeNotification(w->h[r - WAIT_OBJECT_0]);
+    return 1;
+}
+
+static String8 os_resource(String8 name)
+{
+    WCHAR wname[64] = { 0 };
+    if (!name.size || name.size >= ArrayCount(wname)) return str8(0, 0);
+    for (U64 i = 0; i < name.size; i += 1) wname[i] = (WCHAR)name.str[i];
+    HRSRC res = FindResourceW(0, wname, MAKEINTRESOURCEW(10)); // RT_RCDATA
+    HGLOBAL h = res ? LoadResource(0, res) : 0;
+    void *p = h ? LockResource(h) : 0;
+    return p ? str8((U8 *)p, SizeofResource(0, res)) : str8(0, 0);
+}
+
+//- The desktop
+
+typedef struct OS_ShellOpen { WCHAR *file, *args; } OS_ShellOpen;
+
+static U32 os_shell_open_thread(void *p)
+{
+    OS_ShellOpen *so = (OS_ShellOpen *)p;
+    CoInitializeEx(0, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    ShellExecuteW(0, L"open", so->file, so->args, 0, SW_SHOWNORMAL);
+    CoUninitialize();
+    os_free(so);
+    return 0;
+}
+
+static void os_shell_open_async(String8 file, String8 args)
+{
+    Temp t = scratch_begin(0);
+    if (os_open_log.size) { // testing: record instead of opening
+        os_append_file(os_open_log, str8_pushf(t.arena, "%.*s %.*s\r\n", S8F(file), S8F(args)));
+        scratch_end(t);
+        return;
+    }
+    String16 f16 = os_str16_from_8(t.arena, file), a16 = os_str16_from_8(t.arena, args);
+    U64 fb = (f16.size + 1) * sizeof(WCHAR), ab = (a16.size + 1) * sizeof(WCHAR);
+    OS_ShellOpen *so = (OS_ShellOpen *)os_alloc(sizeof(OS_ShellOpen) + fb + ab);
+    if (so) {
+        so->file = (WCHAR *)(so + 1);
+        so->args = (WCHAR *)((U8 *)so->file + fb);
+        memcpy(so->file, f16.str, fb);
+        memcpy(so->args, a16.str, ab);
+        if (!args.size) so->args = 0;
+        os_thread_start(os_shell_open_thread, so);
+    }
+    scratch_end(t);
+}
+
+static void os_open_url(String8 url)
+{
+    if (!str8_starts_with(url, str8_lit("https://"), 1)) return; // only web pages, never files or other schemes
+    os_shell_open_async(url, str8(0, 0));
+}
+
+static String8 os_clipboard_text(Arena *a)
+{
+    String8 r = { 0 };
+    if (!OpenClipboard(0)) return r;
+    HANDLE h = GetClipboardData(CF_UNICODETEXT);
+    WCHAR *w = h ? (WCHAR *)GlobalLock(h) : 0;
+    if (w) {
+        r = os_str8_from_16(a, (U16 *)w, wcslen(w));
+        GlobalUnlock(h);
+    }
+    CloseClipboard();
+    return r;
+}
+
+static OS_Image os_image_decode(Arena *a, String8 data, U32 w, U32 h, B32 fit)
+{
+    // WIC, one factory per thread (each thread joins the multithreaded apartment the first time).
+    thread_static IWICImagingFactory *wic;
+    thread_static B32 wic_tried;
+    if (!wic_tried) {
+        wic_tried = 1;
+        CoInitializeEx(0, COINIT_MULTITHREADED);
+        CoCreateInstance(&CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&wic);
+    }
+    OS_Image img = { 0 };
+    if (!wic) return img;
+    IWICStream *stream = 0;
+    IWICBitmapDecoder *dec = 0;
+    IWICBitmapFrameDecode *frame = 0;
+    IWICFormatConverter *conv = 0;
+    IWICBitmapScaler *scaler = 0;
+    if (FAILED(IWICImagingFactory_CreateStream(wic, &stream))) goto done;
+    if (FAILED(IWICStream_InitializeFromMemory(stream, data.str, (DWORD)data.size))) goto done;
+    if (FAILED(IWICImagingFactory_CreateDecoderFromStream(wic, (IStream *)stream, 0, WICDecodeMetadataCacheOnDemand, &dec))) goto done;
+    if (FAILED(IWICBitmapDecoder_GetFrame(dec, 0, &frame))) goto done;
+    UINT sw = 0, sh = 0;
+    IWICBitmapFrameDecode_GetSize(frame, &sw, &sh);
+    if (!sw || !sh || sw > 16384 || sh > 16384) goto done;
+    if (FAILED(IWICImagingFactory_CreateFormatConverter(wic, &conv))) goto done;
+    if (FAILED(IWICFormatConverter_Initialize(conv, (IWICBitmapSource *)frame, &GUID_WICPixelFormat32bppBGRA,
+                                              WICBitmapDitherTypeNone, 0, 0, WICBitmapPaletteTypeCustom))) goto done;
+    UINT tw, th;
+    if (fit) {
+        // As big as it is, or scaled down to fit inside w x h.
+        F64 k = Min(1.0, Min((F64)w / sw, (F64)h / sh));
+        tw = Max((UINT)(sw * k + 0.5), 1); th = Max((UINT)(sh * k + 0.5), 1);
+        w = tw; h = th;
+    } else {
+        // Scale so the picture covers w x h, then take the middle.
+        F64 k = Max((F64)w / sw, (F64)h / sh);
+        tw = Max((UINT)(sw * k + 0.5), w); th = Max((UINT)(sh * k + 0.5), h);
+    }
+    if (FAILED(IWICImagingFactory_CreateBitmapScaler(wic, &scaler))) goto done;
+    if (FAILED(IWICBitmapScaler_Initialize(scaler, (IWICBitmapSource *)conv, tw, th, WICBitmapInterpolationModeFant))) goto done;
+    {
+        Temp t = temp_begin(a);
+        U8 *pixels = push_array_nz(a, U8, (U64)w * h * 4);
+        WICRect crop = { (INT)(tw - w) / 2, (INT)(th - h) / 2, (INT)w, (INT)h };
+        if (SUCCEEDED(IWICBitmapScaler_CopyPixels(scaler, &crop, w * 4, w * h * 4, pixels))) { img.w = w; img.h = h; img.pixels = pixels; }
+        else temp_end(t);
+    }
+done:
+    if (scaler) IWICBitmapScaler_Release(scaler);
+    if (conv) IWICFormatConverter_Release(conv);
+    if (frame) IWICBitmapFrameDecode_Release(frame);
+    if (dec) IWICBitmapDecoder_Release(dec);
+    if (stream) IWICStream_Release(stream);
+    return img;
 }

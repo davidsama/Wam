@@ -6,7 +6,7 @@
 //   updating: the rows say "Updating..." instead of showing their Update button
 //   installing: a row at the top of Installed ("Installing <name>..."), and "Installing..." on the
 //               addon's Install button in Get addons
-// Each lasts until the worker says that task is done (WM_APP_TASK_DONE carries its id; the listing
+// Each lasts until the worker says that task is done (on_task_done gets its id; the listing
 // it made arrives just before). Part of main_gui.c's unity build.
 
 static void feedback_install(U32 task, String8 id, String8 name, String8 icon)
@@ -24,7 +24,7 @@ static void feedback_install(U32 task, String8 id, String8 name, String8 icon)
     copy_cstr(p->name, sizeof(p->name), name.size ? name : str8_lit("addon"));
     copy_cstr(p->icon, sizeof(p->icon), icon);
     p->src = id.size ? source_of_id(id) : -1;
-    ui_request_frame();
+    wm_request_frame();
 }
 
 static void feedback_remove(U32 task, String8List *keys)
@@ -70,8 +70,8 @@ static PendingInstall *feedback_installing(String8 id)
 // How far install p is: 0..1, -1 under way but how far isn't known, -2 still waiting its turn.
 static F32 feedback_install_progress(PendingInstall *p)
 {
-    if ((LONG)p->task != work_task) return p->task > app.tasks_done ? -2.0f : 1.0f;
-    LONG v = work_permille;
+    if ((S32)p->task != work_task) return p->task > app.tasks_done ? -2.0f : 1.0f;
+    S32 v = work_permille;
     return v < 0 ? -1.0f : (F32)v / 1000.0f;
 }
 
@@ -102,7 +102,7 @@ static B32 draw_install_progress(Rect r, PendingInstall *p)
         F32 fw = w * p->shown;
         if (fw >= 1) r_rect_gradient(rect(r.x0, r.y0, r.x0 + fw, r.y1), ui.theme.accent_bg, ui.theme.accent, Min(rad, fw * 0.5f), 0, 0.5f, 1);
     } else if (f > -1.5f) {
-        F32 t = (F32)fmod((F64)GetTickCount64() / 1100.0, 1.0), seg = w * 0.35f, x0 = r.x0 + (w + seg) * t - seg;
+        F32 t = (F32)fmod((F64)os_now_ms() / 1100.0, 1.0), seg = w * 0.35f, x0 = r.x0 + (w + seg) * t - seg;
         Rect band = rect(Max(x0, r.x0), r.y0, Min(x0 + seg, r.x1), r.y1);
         if (band.x1 > band.x0) r_rect(band, ui_mix(ui.theme.accent_bg, ui.theme.button, 0.3f), rad, 0, 0.5f);
         animating = 1;

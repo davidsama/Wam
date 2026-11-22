@@ -102,25 +102,6 @@ static UI_Theme ui_theme_tinker(void)
     return t;
 }
 
-static int CALLBACK ui_font_found(const LOGFONTW *lf, const TEXTMETRICW *tm, DWORD type, LPARAM found)
-{
-    (void)lf; (void)tm; (void)type;
-    *(B32 *)found = 1;
-    return 0;
-}
-
-static B32 ui_font_installed(wchar_t *family)
-{
-    LOGFONTW lf = { 0 };
-    lf.lfCharSet = DEFAULT_CHARSET;
-    wcsncpy_s(lf.lfFaceName, ArrayCount(lf.lfFaceName), family, _TRUNCATE);
-    B32 found = 0;
-    HDC dc = GetDC(0);
-    EnumFontFamiliesExW(dc, &lf, ui_font_found, (LPARAM)&found, 0);
-    ReleaseDC(0, dc);
-    return found;
-}
-
 static void ui_fonts_load(void)
 {
     if (ui.font_arena) {
@@ -132,15 +113,15 @@ static void ui_fonts_load(void)
     }
     f_atlas_reset();
     F32 s = ui.scale;
-    ui.font.normal = f_font_open(ui.font_arena, L"Segoe UI", 14 * s, FW_NORMAL);
-    ui.font.bold   = f_font_open(ui.font_arena, L"Segoe UI", 14 * s, FW_SEMIBOLD);
-    ui.font.caption  = f_font_open(ui.font_arena, L"Segoe UI", 12 * s, FW_NORMAL);
-    ui.font.title  = f_font_open(ui.font_arena, L"Segoe UI", 17 * s, FW_SEMIBOLD);
-    ui.font.icon   = f_font_open(ui.font_arena, L"Segoe UI Symbol", 12 * s, FW_BOLD);
+    ui.font.normal = f_font_open(ui.font_arena, L"Segoe UI", 14 * s, 400);
+    ui.font.bold   = f_font_open(ui.font_arena, L"Segoe UI", 14 * s, 600);
+    ui.font.caption  = f_font_open(ui.font_arena, L"Segoe UI", 12 * s, 400);
+    ui.font.title  = f_font_open(ui.font_arena, L"Segoe UI", 17 * s, 600);
+    ui.font.icon   = f_font_open(ui.font_arena, L"Segoe UI Symbol", 12 * s, 700);
     // Windows 11's caption glyphs; Windows 10 has the older MDL2 ones (same code points).
-    wchar_t *glyph_family = ui_font_installed(L"Segoe Fluent Icons") ? L"Segoe Fluent Icons" : L"Segoe MDL2 Assets";
-    ui.font.glyphs = f_font_open(ui.font_arena, glyph_family, 10 * s, FW_NORMAL);
-    ui.font.glyphs_big = f_font_open(ui.font_arena, glyph_family, 14 * s, FW_NORMAL);
+    wchar_t *glyph_family = f_family_installed(L"Segoe Fluent Icons") ? L"Segoe Fluent Icons" : L"Segoe MDL2 Assets";
+    ui.font.glyphs = f_font_open(ui.font_arena, glyph_family, 10 * s, 400);
+    ui.font.glyphs_big = f_font_open(ui.font_arena, glyph_family, 14 * s, 400);
 }
 
 //- Ornaments
@@ -224,7 +205,7 @@ static void ui_cog(F32 cx, F32 cy, F32 r, F32 angle, V4 color)
 
 static B32 ui_spinner(F32 cx, F32 cy, F32 r)
 {
-    F32 a = (F32)fmod((F64)GetTickCount64() / 2400.0, 1.0) * 6.2831853f;
+    F32 a = (F32)fmod((F64)os_now_ms() / 2400.0, 1.0) * 6.2831853f;
     ui_cog(cx, cy, r, a, ui.theme.ornate > 0 ? ui.theme.trim_hi : ui.theme.accent);
     return 1;
 }
@@ -339,7 +320,7 @@ static F32 ui_text_wrapped(F_Font *f, F32 x, F32 y, F32 w, String8 text, V4 colo
 static B32 ui_loading_bar(Rect r)
 {
     F32 w = r.x1 - r.x0, seg = w * 0.25f;
-    F32 t = (F32)fmod((F64)GetTickCount64() / 1100.0, 1.0);
+    F32 t = (F32)fmod((F64)os_now_ms() / 1100.0, 1.0);
     F32 x0 = r.x0 + (w + seg) * t - seg;
     Rect bar = rect(Max(x0, r.x0), r.y0, Min(x0 + seg, r.x1), r.y0 + 2 * ui.scale);
     if (bar.x1 > bar.x0) r_rect(bar, ui.theme.accent, 0, 0, 0);
@@ -479,7 +460,7 @@ static void ui_text_backspace(UI_TextBuf *t)
 
 static void ui_text_clear(UI_TextBuf *t)
 {
-    SecureZeroMemory(t->s, sizeof(t->s));
+    os_secure_zero(t->s, sizeof(t->s));
     t->len = 0;
 }
 
@@ -492,16 +473,16 @@ static void ui_text_paste(UI_TextBuf *t, String8 utf8)
     }
 }
 
-static B32 ui_text_edit(UI_TextBuf *t, UI_Event *e)
+static B32 ui_text_edit(UI_TextBuf *t, WM_Event *e)
 {
-    if (e->kind == UI_EVENT_TEXT) { ui_text_insert(t, e->codepoint); return 1; }
-    B32 ctrl = (e->mods & UI_MOD_CTRL) != 0;
-    if (e->key == UI_KEY_BACKSPACE) {
+    if (e->kind == WM_EVENT_TEXT) { ui_text_insert(t, e->codepoint); return 1; }
+    B32 ctrl = (e->mods & WM_MOD_CTRL) != 0;
+    if (e->key == WM_KEY_BACKSPACE) {
         if (ctrl) t->len = 0;
         else ui_text_backspace(t);
         return 1;
     }
-    if (ctrl && e->key == 'V') { ui_text_paste(t, ui_clipboard_text(ui.frame_arena)); return 1; }
+    if (ctrl && e->key == 'V') { ui_text_paste(t, os_clipboard_text(ui.frame_arena)); return 1; }
     return 0;
 }
 
@@ -524,4 +505,112 @@ static void ui_text_field(Rect r, UI_TextBuf *t, String8 hint, B32 masked, V4 bo
     if (q.size) caret = f_draw_text(f, r.x0 + 12 * s, ty, q, ui.theme.text, r.x1 - r.x0 - 24 * s) + 1 * s;
     else f_draw_text(f, r.x0 + 16 * s, ty, hint, ui.theme.faint, r.x1 - r.x0 - 32 * s);
     r_rect(rect(caret, ty + 2 * s, caret + ui_px(), ty + f->line_height - 2 * s), ui.theme.accent, 0, 0, 0);
+}
+
+//- Frames
+
+#define UI_ATLAS_SIZE 2048 // the glyph atlas (R8)
+
+static B32 ui_init(void)
+{
+    if (!ui.frame_arena) ui.frame_arena = arena_alloc(GB(1));
+    ui.theme = ui_theme_dark();
+    if (!r_init(wm_window_handle(), UI_ATLAS_SIZE, UI_ATLAS_SIZE)) return 0;
+    f_init(UI_ATLAS_SIZE, UI_ATLAS_SIZE);
+    ui.scale = wm_scale();
+    ui_fonts_load();
+    return 1;
+}
+
+static U32 ui_shot_count;
+
+// Testing: F12 (with ui_shot_dir set) saves the frame being drawn, and doesn't reach the app.
+static void ui_take_shot_keys(void)
+{
+    U32 kept = 0;
+    for (U32 i = 0; i < ui.event_count; i += 1) {
+        WM_Event *e = &ui.events[i];
+        if (ui_shot_dir.size && e->kind == WM_EVENT_KEY && e->key == WM_KEY_F12) {
+            String16 p16 = os_str16_from_8(ui.frame_arena, str8_pushf(ui.frame_arena, "%.*s\\shot-%u.bmp", S8F(ui_shot_dir), ui_shot_count++));
+            if (p16.size < ArrayCount(r_shot_path)) memcpy(r_shot_path, p16.str, (p16.size + 1) * sizeof(p16.str[0]));
+            continue;
+        }
+        ui.events[kept++] = *e;
+    }
+    ui.event_count = kept;
+}
+
+static B32 ui_frame(WM_Frame *f, B32 (*build)(void))
+{
+    if (!r_state) return 0; // (ui_init hasn't run)
+    U64 t0 = os_now_us();
+    arena_clear(ui.frame_arena);
+    if (f->scale != ui.scale) { ui.scale = f->scale; ui_fonts_load(); }
+    r_resize((U32)f->width, (U32)f->height);
+    ui.width = (F32)r_state->width;
+    ui.height = (F32)r_state->height;
+    ui.in = f->in;
+    ui.events = f->events;
+    ui.event_count = f->event_count;
+    ui_take_shot_keys();
+    ui.clip = rect(0, 0, ui.width, ui.height);
+    ui.overlay_on = ui.in_overlay = 0;
+    ui.block_count = 0;
+    if (f_begin_frame()) wm_request_frame(); // the glyph atlas was full: emptied, so draw again
+    ui.cursor = UI_CURSOR_ARROW;
+    r_begin_frame();
+    ui.tip = str8(0, 0);
+    B32 again = build();
+    ui_tooltip_draw();
+    wm_caption_overlay(ui.overlay, ui.overlay_on);
+    wm_set_cursor(ui.cursor);
+    ui.frame_ms = (F64)(os_now_us() - t0) / 1000.0;
+    {
+        // Frames in the last second, from a ring of recent frame times.
+        static U64 times[512];
+        static U32 head;
+        U64 now = os_now_us();
+        times[head++ % ArrayCount(times)] = now;
+        U32 n = 0;
+        for (U32 k = 0; k < ArrayCount(times); k += 1) n += times[k] && now - times[k] < 1000000;
+        ui.fps = n;
+    }
+    r_end_frame(ui.theme.bg);
+    if (ui_frame_log.size) {
+        String8 line = str8_pushf(ui.frame_arena, "%llu %d %d resize %llu cpu %d present %llu by %c sizing %d\r\n", os_now_us(), (int)ui.width, (int)ui.height,
+                                  r_state->us_resize, (int)(ui.frame_ms * 1000), r_state->us_present, f->cause, f->sizing);
+        r_state->us_resize = 0;
+        os_append_file(ui_frame_log, line);
+    }
+    ui.events = 0;
+    ui.event_count = 0;
+    return again;
+}
+
+static F32 ui_window_buttons(F32 right, F32 h)
+{
+    F32 bw = 46 * ui.scale, x = right - 3 * bw;
+    // Segoe Fluent Icons / MDL2: ChromeMinimize, ChromeMaximize or ChromeRestore, ChromeClose.
+    char *glyph[3] = { "\xEE\xA4\xA1", wm_window_is_maximized() ? "\xEE\xA4\xA3" : "\xEE\xA4\xA2", "\xEE\xA2\xBB" };
+    for (int i = 0; i < 3; i += 1) {
+        Rect b = rect(x + i * bw, 0, x + (i + 1) * bw, h);
+        B32 hot = ui_mouse_in(b), down = hot && ui.in.down && point_in(b, ui.in.press_x, ui.in.press_y);
+        if (i == 1) {
+            B32 max_hot, max_down; // maximize gets the mouse through the window layer (snap layouts)
+            wm_caption_maximize(b, &max_hot, &max_down);
+            hot |= max_hot; down |= max_down;
+        } else {
+            wm_caption_hole(b);
+        }
+        V4 fg = wm_window_is_active() || hot ? ui.theme.text : ui.theme.faint;
+        if (hot && i == 2) { r_rect(b, ui_hex(0xc42b1c, down ? 0.85f : 1), 0, 0, 0); fg = ui_hex(0xffffff, 1); }
+        else if (hot) r_rect(b, ui_hex(0xffffff, down ? 0.05f : 0.09f), 0, 0, 0);
+        ui_text_centered(ui.font.glyphs, b, str8_cstring(glyph[i]), fg);
+        if (ui_clicked(b)) {
+            if (i == 0) wm_window_minimize();
+            else if (i == 1) wm_window_toggle_maximized(); // (only when the caption is off: else maximize isn't client area)
+            else wm_window_close();
+        }
+    }
+    return x;
 }

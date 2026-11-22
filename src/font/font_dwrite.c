@@ -58,6 +58,26 @@ static void f_init(U32 atlas_w, U32 atlas_h)
     for (U32 i = 0; i < 256; i += 1) f_gamma[i] = (U8)(powf((F32)i / 255.0f, F_CONTRAST) * 255.0f + 0.5f);
 }
 
+// Whether a font family is installed (e.g. Segoe Fluent Icons is on Windows 11, not 10).
+static int CALLBACK f_family_found(const LOGFONTW *lf, const TEXTMETRICW *tm, DWORD type, LPARAM found)
+{
+    (void)lf; (void)tm; (void)type;
+    *(B32 *)found = 1;
+    return 0;
+}
+
+static B32 f_family_installed(wchar_t *family)
+{
+    LOGFONTW lf = { 0 };
+    lf.lfCharSet = DEFAULT_CHARSET;
+    wcsncpy_s(lf.lfFaceName, ArrayCount(lf.lfFaceName), family, _TRUNCATE);
+    B32 found = 0;
+    HDC dc = GetDC(0);
+    EnumFontFamiliesExW(dc, &lf, f_family_found, (LPARAM)&found, 0);
+    ReleaseDC(0, dc);
+    return found;
+}
+
 static F_Font *f_font_open(Arena *a, wchar_t *face, F32 px, int weight)
 {
     F_Font *f = push_struct(a, F_Font);

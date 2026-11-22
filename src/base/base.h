@@ -21,6 +21,9 @@ typedef float    F32;
 typedef double   F64;
 typedef S32      B32;
 
+typedef struct V4 { F32 x, y, z, w; } V4;
+typedef struct Rect { F32 x0, y0, x1, y1; } Rect; // pixels: x1, y1 exclusive
+
 #define KB(n) ((U64)(n) << 10)
 #define MB(n) ((U64)(n) << 20)
 #define GB(n) ((U64)(n) << 30)

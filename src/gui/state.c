@@ -26,7 +26,7 @@ typedef struct Snapshot {
     Arena *arena;
     int flavor;
     U32 gen;
-    LONG seq;            // when its data was read: a newer snapshot never gets replaced by an older one
+    S32 seq;            // when its data was read: a newer snapshot never gets replaced by an older one
     String8 addons_dir;
     GameVersion client;
     Row *rows;
@@ -92,17 +92,17 @@ typedef enum TaskKind { TASK_REFRESH, TASK_SYNC, TASK_INSTALL, TASK_INSTALL_FILE
 // row keys (addon ids or untracked folder names) separated by '\n'; empty update = all.
 #define WAGO_KEY_MAX 600
 typedef struct Task {
-    TaskKind kind; int flavor; U32 gen; LONG seq; char wow_root[1024]; B32 force;
-    U32 id;               // queued tasks: numbered in order; WM_APP_TASK_DONE says which one finished
+    TaskKind kind; int flavor; U32 gen; S32 seq; char wow_root[1024]; B32 force;
+    U32 id;               // queued tasks: numbered in order; on_task_done says which one finished
     U64 queued_us;        // when it was queued (tasks.log: how long it waited)
     int sort; U64 index;  // searches: BrowseSort and page start
     char text[8192]; char wago_key[WAGO_KEY_MAX]; // the key as of queuing
 } Task;
 
 #define TASK_QUEUE 64
-static CRITICAL_SECTION task_lock, status_lock;
-static HANDLE task_sem;
-static volatile LONG snap_seq;
+static OS_Mutex task_lock, status_lock;
+static OS_Semaphore task_sem;
+static volatile S32 snap_seq;
 // A lane: a thread of its own for one kind of quick task, so it never waits behind a sync or an
 // install. Only the newest request matters, so it's one slot rather than a queue.
 //   listings (TASK_REFRESH): switching flavors
@@ -111,7 +111,7 @@ static volatile LONG snap_seq;
 //   the catalog (TASK_CATALOG): Get addons' list, from the disk cache and then the network
 //   details (TASK_DETAILS): the selected addon's description, changelog and screenshots
 //   changes (TASK_CHANGES): an installed addon's release notes since its version (the changes popup)
-typedef struct Lane { CRITICAL_SECTION lock; HANDLE event; Task slot; B32 full; U32 id; UINT done_msg; } Lane;
+typedef struct Lane { OS_Mutex lock; OS_Event event; Task slot; B32 full; U32 id; WM_PostFunc *done; } Lane;
 static Lane refresh_lane, suggest_lane, downloads_lane, catalog_lane, details_lane, changes_lane;
 static Task task_q[TASK_QUEUE];
 static U32 task_head, task_tail;
@@ -180,7 +180,6 @@ typedef struct PendingDownload {
 typedef struct PendingList { PendingDownload v[16]; U32 count; int flavor; U32 gen; } PendingList; // worker -> UI
 
 typedef struct App {
-    HWND hwnd;              // = ui_hwnd; workers post their results here
     Arena *arena;
     String8 wow_root;       // UI thread only; each task gets a copy
     U32 root_gen;           // bumped when the user picks another install: results from the old one are dropped
@@ -212,12 +211,12 @@ typedef struct App {
     U64 cat_any;               // of those, how many (for "All categories")
     Rect cat_btn;              // where the category menu drops down from
     U32 src_count[SRC_COUNT];  // catalog entries per source (which chips to show)
-    U32 link_cat_version; Snapshot *link_snap; LONG link_snap_seq; B32 link_valid; // what cat_link last paired (see browse_link)
+    U32 link_cat_version; Snapshot *link_snap; S32 link_snap_seq; B32 link_valid; // what cat_link last paired (see browse_link)
     // The ordered list, re-sorted only when what it depends on changes (see browse_order).
     Arena *order_arena;
     U32 *order;
     U64 order_count;
-    U32 order_cat_version; Snapshot *order_snap; LONG order_snap_seq; char order_query[256]; int order_sort; U32 order_hidden; B32 order_hide_inst; S32 order_category, order_subcategory; B32 order_wago_key; B32 order_valid;
+    U32 order_cat_version; Snapshot *order_snap; S32 order_snap_seq; char order_query[256]; int order_sort; U32 order_hidden; B32 order_hide_inst; S32 order_category, order_subcategory; B32 order_wago_key; B32 order_valid;
     char sel_id[160];          // the selected row (keyboard / click), "" = none; Enter installs it
     S64 sel_index;             // its position in order, -1 = none
     B32 sel_reveal;            // scroll it into view next frame
@@ -283,10 +282,26 @@ typedef struct App {
 
 static App app;
 
-static void browse_for_root(void);   // deferred UI (ui_defer): they open a dialog / menu
+// Workers' results, run on the UI thread (wm_post; main_gui.c). The snapshots' arenas become the UI's.
+static void on_snapshot(U64 param, void *snap);        // Snapshot: a listing
+static void on_search(U64 param, void *ss);            // SearchSnap: a typed search, or a page of a sort
+static void on_catalog(U64 param, void *cs);           // CatalogSnap: from the disk cache or the network
+static void on_details(U64 param, void *ds);           // DetailSnap
+static void on_changes(U64 param, void *cs);           // ChangesSnap
+static void on_downloads(U64 param, void *ds);         // DownloadsSnap
+static void on_pending(U64 param, void *pl);           // PendingList (os_alloc): CurseForge files to fetch through their page
+static void on_status(U64 param, void *ptr);           // the status line or the progress changed: a frame
+static void on_task_done(U64 id, void *ptr);           // a queued task finished
+static void on_refresh_done(U64 id, void *ptr);        // a lane answered request id
+static void on_suggest_done(U64 id, void *ptr);
+static void on_catalog_done(U64 id, void *ptr);
+static void on_details_done(U64 id, void *ptr);
+static void on_downloads_changed(U64 param, void *ptr); // a download folder changed (the watcher thread)
+
+static void browse_for_root(void);   // deferred UI (wm_defer): they open a dialog / menu
 static void show_root_menu(void);
 static void waiting_open_all(void);  // main_gui.c: opens the CurseForge pages of files waiting to be downloaded
-static B32 web_ok;   // WebView2 is available: CurseForge pages open in wam's download window (ui_webview.c)
+static B32 web_ok;   // WebView2 is available: CurseForge pages open in wam's download window (wm_webview.c)
 
 static void copy_cstr(char *dst, U64 cap, String8 s)
 {
@@ -319,19 +334,19 @@ static U32 dispatch_task(Task t)
                    : kind == TASK_DETAILS ? &details_lane : kind == TASK_CHANGES ? &changes_lane : &downloads_lane;
         U32 id = kind == TASK_REFRESH ? ++app.refresh_asked : kind == TASK_SUGGEST ? ++app.suggest_asked : kind == TASK_CATALOG ? ++app.catalog_asked
                : kind == TASK_DETAILS ? ++app.details_asked : 0;
-        EnterCriticalSection(&lane->lock);
+        os_mutex_lock(&lane->lock);
         lane->slot = t;
         lane->full = 1;
         lane->id = id;
-        LeaveCriticalSection(&lane->lock);
-        SetEvent(lane->event);
+        os_mutex_unlock(&lane->lock);
+        os_event_signal(lane->event);
         return 0;
     }
-    EnterCriticalSection(&task_lock);
+    os_mutex_lock(&task_lock);
     B32 queued = task_tail - task_head < TASK_QUEUE;
     if (queued) { t.id = ++app.task_ids; t.queued_us = os_now_us(); task_q[task_tail++ % TASK_QUEUE] = t; }
-    LeaveCriticalSection(&task_lock);
-    if (queued) { app.pending += 1; ReleaseSemaphore(task_sem, 1, 0); }
+    os_mutex_unlock(&task_lock);
+    if (queued) { app.pending += 1; os_semaphore_signal(task_sem); }
     return queued ? t.id : 0;
 }
 
@@ -341,7 +356,7 @@ static U32 push_task(TaskKind kind, String8 text) { return push_task_ex(kind, te
 
 static void worker_set_status_url(String8 msg, B32 is_error, String8 url)
 {
-    EnterCriticalSection(&status_lock);
+    os_mutex_lock(&status_lock);
     U64 n = Min(msg.size, sizeof(status_text) - 1);
     memcpy(status_text, msg.str, n);
     status_text[n] = 0;
@@ -349,8 +364,8 @@ static void worker_set_status_url(String8 msg, B32 is_error, String8 url)
     n = str8_starts_with(url, str8_lit("https://"), 1) ? Min(url.size, sizeof(status_url) - 1) : 0;
     if (n) memcpy(status_url, url.str, n);
     status_url[n] = 0;
-    LeaveCriticalSection(&status_lock);
-    PostMessageW(app.hwnd, WM_APP_STATUS, 0, 0);
+    os_mutex_unlock(&status_lock);
+    wm_post(on_status, 0, 0);
 }
 
 static void worker_set_status(String8 msg, B32 is_error) { worker_set_status_url(msg, is_error, str8(0, 0)); }
@@ -359,16 +374,16 @@ static void worker_status_cb(void *user, String8 msg) { (void)user; worker_set_s
 
 // The queued task the worker is running, and how far an install in it is (thousandths; -1: under
 // way, how far unknown). Written by the worker, read by the UI for the progress bars (feedback.c).
-static volatile LONG work_task, work_permille = -1;
+static volatile S32 work_task, work_permille = -1;
 
 static void worker_progress_cb(void *user, F32 fraction)
 {
     (void)user;
-    LONG v = fraction < 0 ? -1 : (LONG)(Clamp(fraction, 0.0f, 1.0f) * 1000.0f);
-    LONG was = work_permille;
+    S32 v = fraction < 0 ? -1 : (S32)(Clamp(fraction, 0.0f, 1.0f) * 1000.0f);
+    S32 was = work_permille;
     if (v == was || (v > was && was >= 0 && v - was < 5)) return; // half a percent at a time is plenty
-    InterlockedExchange(&work_permille, v);
-    PostMessageW(app.hwnd, WM_APP_STATUS, 0, 0); // a frame for the bar
+    os_atomic_store(&work_permille, v);
+    wm_post(on_status, 0, 0); // a frame for the bar
 }
 
 // "11508, 16001, 120105" -> the entry for this client: exact, else same major.minor, else same major, else first.

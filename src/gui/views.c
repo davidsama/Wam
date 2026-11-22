@@ -184,7 +184,7 @@ static B32 draw_row_look(RowLook *l)
         B32 hot = ui_mouse_in(pr) && ui_mouse_in(l->list) && l->pill_url[k].size;
         draw_source_pill(pr, l->pill_src[k], l->pill_filled[k], hot);
         if (point_in(pr, ui.in.press_x, ui.in.press_y)) pressed_pill = 1;
-        if (hot && ui.in.released && point_in(pr, ui.in.press_x, ui.in.press_y)) ui_open_url(l->pill_url[k]);
+        if (hot && ui.in.released && point_in(pr, ui.in.press_x, ui.in.press_y)) os_open_url(l->pill_url[k]);
         x += w + pill_gap;
     }
     x -= pill_gap;
@@ -418,7 +418,7 @@ static B32 draw_installed(Rect list)
                            str8_lit("Pick the folder that has _retail_, _classic_era_ or another game folder in it (e.g. C:\\Program Files (x86)\\World of Warcraft)."), C_FAINT);
         String8 label = str8_lit("Choose World of Warcraft folder...");
         F32 bw = ui_button_width(label), cx = (list.x0 + list.x1) * 0.5f, by = list.y0 + 108 * s;
-        if (ui_button(rect(cx - bw * 0.5f, by, cx + bw * 0.5f, by + 32 * s), label, C_TEXT, C_ACCENT_BG, C_ACCENT)) ui_defer(browse_for_root);
+        if (ui_button(rect(cx - bw * 0.5f, by, cx + bw * 0.5f, by + 32 * s), label, C_TEXT, C_ACCENT_BG, C_ACCENT)) wm_defer(browse_for_root);
     } else if (count == 0) {
         String8 msg = !snap ? str8_pushf(ui.frame_arena, "Loading %s addons...", wow_flavors[app.flavor].label)
                     : str8_lit("No addons installed for this flavor yet. Find some under Get addons, or drop a .zip / .rar here.");
@@ -444,17 +444,15 @@ static B32 snapshot_has_id(String8 id)
 // asks CurseForge for the next page of the same sort. What comes back joins the catalog, and the
 // list re-sorts without moving the row under the mouse or the selected one.
 
-// Delayed requests (after typing pauses, after the selection rests). WM_TIMER wakes an idle window,
-// but Windows only delivers it when no repaint is pending, so while something animates the frame
-// checks the deadlines itself (frame_timers).
-#define TIMER_SUGGEST 1
-#define TIMER_DETAILS 2
+// Delayed requests (after typing pauses, after the selection rests). A timer (wm_timer_start) wakes
+// an idle window, but only fires when nothing is waiting to be drawn, so while something animates
+// the frame checks the deadlines itself (frame_timers).
 static U64 suggest_due_ms, details_due_ms; // 0 = nothing pending
 static void suggest_timer(void);
 static void details_timer(void);
 static void frame_timers(void)
 {
-    U64 now = GetTickCount64();
+    U64 now = os_now_ms();
     if (suggest_due_ms && now >= suggest_due_ms) suggest_timer();
     if (details_due_ms && now >= details_due_ms) details_timer();
 }
@@ -518,7 +516,7 @@ static void catalog_merge(SearchResult *v, U64 count)
 // installed addon whose .toc names both ids pairs them for sure.
 static void browse_link(void)
 {
-    LONG seq = app.snap ? app.snap->seq : 0;
+    S32 seq = app.snap ? app.snap->seq : 0;
     if (app.link_valid && app.link_cat_version == app.cat.version && app.link_snap == app.snap && app.link_snap_seq == seq) return;
     app.link_valid = 1;
     app.link_cat_version = app.cat.version;
@@ -629,7 +627,7 @@ static void browse_order(F32 row_h)
         F32 pos = app.scroll[VIEW_SEARCH].pos;
         S64 first = (S64)(pos / row_h);
         // The hovered row counts unless the user is typing (then the best new match belongs on top).
-        B32 typing = GetTickCount64() - app.last_type_ms < 600;
+        B32 typing = os_now_ms() - app.last_type_ms < 600;
         anchor = app.sel_index >= 0 ? app.sel_index : app.hover_index >= 0 && !typing ? app.hover_index : pos > 0 ? first : -1;
         if (anchor >= (S64)app.order_count) anchor = -1;
     }
@@ -766,15 +764,15 @@ static void query_changed(void)
 {
     app.sel_id[0] = app.sel_restore[0] = 0;
     app.sel_index = -1;
-    app.last_type_ms = GetTickCount64();
+    app.last_type_ms = os_now_ms();
     app.scroll[VIEW_SEARCH].pos = app.scroll[VIEW_SEARCH].target = 0;
-    SetTimer(app.hwnd, TIMER_SUGGEST, 150, 0);
-    suggest_due_ms = GetTickCount64() + 150;
+    wm_timer_start(suggest_timer, 150);
+    suggest_due_ms = os_now_ms() + 150;
 }
 
 static void suggest_timer(void)
 {
-    KillTimer(app.hwnd, TIMER_SUGGEST);
+    wm_timer_stop(suggest_timer);
     suggest_due_ms = 0;
     if (app.view != VIEW_SEARCH) return;
     String8 q = browse_query();
@@ -832,17 +830,17 @@ static void browse_select(S64 index)
 }
 
 // Up / Down / Page Up / Page Down / Home / End in Get addons. Returns 1 if it used the key.
-static B32 browse_key(UI_Key key, B32 ctrl)
+static B32 browse_key(WM_Key key, B32 ctrl)
 {
     if (!app.order_count) return 0;
     S64 page = 8, i = app.sel_index;
     switch (key) {
-        case UI_KEY_DOWN:      browse_select(i < 0 ? 0 : Min(i + 1, (S64)app.order_count - 1)); return 1;
-        case UI_KEY_UP:        browse_select(i <= 0 ? -1 : i - 1); return 1; // up from the first row: back to the field
-        case UI_KEY_PAGE_DOWN: browse_select(Min(Max(i, 0) + page, (S64)app.order_count - 1)); return 1;
-        case UI_KEY_PAGE_UP:   browse_select(Max(i - page, 0)); return 1;
-        case UI_KEY_HOME:      if (ctrl) { browse_select(0); return 1; } return 0;
-        case UI_KEY_END:       if (ctrl) { browse_select((S64)app.order_count - 1); return 1; } return 0;
+        case WM_KEY_DOWN:      browse_select(i < 0 ? 0 : Min(i + 1, (S64)app.order_count - 1)); return 1;
+        case WM_KEY_UP:        browse_select(i <= 0 ? -1 : i - 1); return 1; // up from the first row: back to the field
+        case WM_KEY_PAGE_DOWN: browse_select(Min(Max(i, 0) + page, (S64)app.order_count - 1)); return 1;
+        case WM_KEY_PAGE_UP:   browse_select(Max(i - page, 0)); return 1;
+        case WM_KEY_HOME:      if (ctrl) { browse_select(0); return 1; } return 0;
+        case WM_KEY_END:       if (ctrl) { browse_select((S64)app.order_count - 1); return 1; } return 0;
         default: return 0;
     }
 }
@@ -860,10 +858,10 @@ static void show_category_menu(void)
 {
     Arena *a = ui.frame_arena;
     enum { MAX = 4 + CAT_CATEGORY_COUNT * 3 + CAT_SUBCATEGORY_COUNT };
-    UI_MenuItem items[MAX];
+    WM_MenuItem items[MAX];
     S32 cat_of[MAX], sub_of[MAX]; // what each item picks; cat -2 = nothing (separator, submenu)
     U32 n = 0;
-    #define MENU_ADD(label_, parent_, checked_, cat_, sub_) do { items[n] = (UI_MenuItem){ label_, parent_, checked_ }; cat_of[n] = cat_; sub_of[n] = sub_; n += 1; } while (0)
+    #define MENU_ADD(label_, parent_, checked_, cat_, sub_) do { items[n] = (WM_MenuItem){ label_, parent_, checked_ }; cat_of[n] = cat_; sub_of[n] = sub_; n += 1; } while (0)
     MENU_ADD(str8_pushf(a, "All categories  (%.*s)", S8F(fmt_thousands(a, (S64)app.cat_any))), -1, app.category < 0, -1, -1);
     MENU_ADD(str8_lit("-"), -1, 0, -2, -1);
     for (U32 c = 0; c < CAT_CATEGORY_COUNT; c += 1) {
@@ -885,12 +883,12 @@ static void show_category_menu(void)
         }
     }
     #undef MENU_ADD
-    S32 pick = ui_popup_menu_tree(app.cat_btn, items, n);
+    S32 pick = wm_popup_menu_tree(app.cat_btn, items, n);
     if (pick >= 0 && cat_of[pick] != -2 && (cat_of[pick] != app.category || sub_of[pick] != app.subcategory)) {
         app.category = cat_of[pick];
         app.subcategory = sub_of[pick];
         app.scroll[VIEW_SEARCH].pos = app.scroll[VIEW_SEARCH].target = 0;
-        ui_request_frame();
+        wm_request_frame();
     }
 }
 
@@ -913,7 +911,7 @@ static F32 draw_browse_filters(Rect r)
             if (searching) app.sort_query = (BrowseSort)k; else app.sort_browse = (BrowseSort)k;
             app.scroll[VIEW_SEARCH].pos = app.scroll[VIEW_SEARCH].target = 0;
             app.sel_id[0] = app.sel_restore[0] = 0;
-            if (searching) { app.sugg_last_query[0] = 0; suggest_due_ms = GetTickCount64(); SetTimer(app.hwnd, TIMER_SUGGEST, 1, 0); } // results for this sort too
+            if (searching) { app.sugg_last_query[0] = 0; suggest_due_ms = os_now_ms(); wm_timer_start(suggest_timer, 1); } // results for this sort too
         }
         x += w + 6 * s;
     }
@@ -926,7 +924,7 @@ static F32 draw_browse_filters(Rect r)
         B32 on = app.category >= 0, hot = ui_mouse_in(b);
         r_rect(b, on ? C_ACCENT_BG : hot ? C_BUTTON_HI : C_BUTTON, h * 0.5f, 0, 0.5f);
         ui_text_centered(ui.font.caption, b, label, on ? C_TEXT : C_DIM);
-        if (ui_clicked(b)) { app.cat_btn = b; ui_defer(show_category_menu); }
+        if (ui_clicked(b)) { app.cat_btn = b; wm_defer(show_category_menu); }
         x = b.x1;
     }
     x += 12 * s;
@@ -976,7 +974,7 @@ static DetailSnap *details_find(String8 id)
 static void details_arrived(DetailSnap *ds)
 {
     if (ds->flavor != app.flavor || ds->gen != app.root_gen) { arena_release(ds->arena); return; }
-    ds->arrived_ms = GetTickCount64();
+    ds->arrived_ms = os_now_ms();
     for (U32 i = 0; i < DETAIL_CACHE; i += 1) {
         DetailSnap *old = app.details[i];
         if (!old || !str8_match(old->d.id, ds->d.id, 0)) continue;
@@ -996,17 +994,17 @@ static void details_follow(void)
     if (str8_match(str8_cstring(app.sel_id), str8_cstring(app.detail_want), 0)) return;
     copy_cstr(app.detail_want, sizeof(app.detail_want), str8_cstring(app.sel_id));
     app.detail_scroll.pos = app.detail_scroll.target = 0;
-    if (app.sel_id[0]) { SetTimer(app.hwnd, TIMER_DETAILS, 120, 0); details_due_ms = GetTickCount64() + 120; }
+    if (app.sel_id[0]) { wm_timer_start(details_timer, 120); details_due_ms = os_now_ms() + 120; }
 }
 
 static void details_timer(void)
 {
-    KillTimer(app.hwnd, TIMER_DETAILS);
+    wm_timer_stop(details_timer);
     details_due_ms = 0;
     String8 want = str8_cstring(app.detail_want);
     DetailSnap *have = want.size ? details_find(want) : 0;
     // A failure shown for a few seconds already is asked again (it stays on screen until the answer comes).
-    if (have && !have->d.ok && GetTickCount64() - have->arrived_ms > 5000) { have = 0; app.detail_asked[0] = 0; }
+    if (have && !have->d.ok && os_now_ms() - have->arrived_ms > 5000) { have = 0; app.detail_asked[0] = 0; }
     if (!want.size || have || str8_match(want, str8_cstring(app.detail_asked), 0)) return;
     copy_cstr(app.detail_asked, sizeof(app.detail_asked), want);
     push_task(TASK_DETAILS, want);
@@ -1044,25 +1042,25 @@ static void viewer_open(Shot *shots, U32 n, U32 index)
     app.viewer_index = Min(index, app.viewer_count ? app.viewer_count - 1 : 0);
     app.viewer_open = app.viewer_count > 0;
     app.viewer_fresh = 1; // the click that opened it isn't one on the viewer
-    ui_request_frame();
+    wm_request_frame();
 }
 
 static void viewer_step(int d)
 {
     if (!app.viewer_open || app.viewer_count < 2) return;
     app.viewer_index = (U32)(((int)app.viewer_index + d + (int)app.viewer_count) % (int)app.viewer_count);
-    ui_request_frame();
+    wm_request_frame();
 }
 
 // Keys while the viewer is open (it takes them all, and the typing). Returns 1 if it was open.
-static B32 viewer_event(UI_Event *e)
+static B32 viewer_event(WM_Event *e)
 {
     if (!app.viewer_open) return 0;
-    if (e->kind != UI_EVENT_KEY) return 1;
-    UI_Key k = e->key;
-    if (k == UI_KEY_ESCAPE) app.viewer_open = 0;
-    else if (k == UI_KEY_LEFT || k == UI_KEY_PAGE_UP) viewer_step(-1);
-    else if (k == UI_KEY_RIGHT || k == UI_KEY_PAGE_DOWN || k == UI_KEY_SPACE) viewer_step(1);
+    if (e->kind != WM_EVENT_KEY) return 1;
+    WM_Key k = e->key;
+    if (k == WM_KEY_ESCAPE) app.viewer_open = 0;
+    else if (k == WM_KEY_LEFT || k == WM_KEY_PAGE_UP) viewer_step(-1);
+    else if (k == WM_KEY_RIGHT || k == WM_KEY_PAGE_DOWN || k == WM_KEY_SPACE) viewer_step(1);
     return 1;
 }
 
@@ -1109,7 +1107,7 @@ static B32 draw_viewer(void)
     B32 ohot = ui_mouse_in(ob);
     r_rect(ob, ui_hex(0xffffff, ohot ? 0.18f : 0.08f), 13 * s, 0, 0.5f);
     ui_text_centered(ui.font.caption, ob, ol, ui_hex(0xffffff, ohot ? 1.0f : 0.8f));
-    if (ui_clicked(ob)) { ui_open_url(url); used = 1; }
+    if (ui_clicked(ob)) { os_open_url(url); used = 1; }
     // A click beside the picture closes the viewer.
     if (!used && ui.in.released && point_in(full, ui.in.press_x, ui.in.press_y) && !point_in(drawn, ui.in.press_x, ui.in.press_y)) app.viewer_open = 0;
     ui_overlay_end();
@@ -1118,11 +1116,8 @@ static B32 draw_viewer(void)
 
 static String8 fmt_year(Arena *a, S64 unix_secs)
 {
-    U64 ft = (U64)unix_secs * 10000000ull + 116444736000000000ull;
-    FILETIME f = { (DWORD)ft, (DWORD)(ft >> 32) };
-    SYSTEMTIME st;
-    if (unix_secs <= 0 || !FileTimeToSystemTime(&f, &st)) return str8(0, 0);
-    return str8_pushf(a, "%u", st.wYear);
+    OS_DateTime d = os_utc_from_unix(unix_secs);
+    return d.year ? str8_pushf(a, "%u", d.year) : str8(0, 0);
 }
 
 // A small text button for a link; returns the x after it.
@@ -1130,7 +1125,7 @@ static F32 detail_link(F32 x, F32 y, F32 h, String8 label, String8 url)
 {
     if (!str8_starts_with(url, str8_lit("https://"), 1) && !str8_starts_with(url, str8_lit("http://"), 1)) return x;
     F32 w = ui_button_width(label);
-    if (ui_button(rect(x, y, x + w, y + h), label, C_TEXT, C_BUTTON, C_BUTTON_HI)) ui_open_url(url);
+    if (ui_button(rect(x, y, x + w, y + h), label, C_TEXT, C_BUTTON, C_BUTTON_HI)) os_open_url(url);
     return x + w + 8 * ui.scale;
 }
 
@@ -1171,7 +1166,7 @@ static B32 draw_detail(Rect p, SearchResult *e)
         Rect tr = rect(ax + 6 * s, ly, ax + 6 * s + tw, ly + pill_h);
         B32 hot = ui_mouse_in(tr) && twin->website.size;
         draw_source_pill(tr, tsrc, 0, hot);
-        if (hot && ui_clicked(tr)) ui_open_url(twin->website);
+        if (hot && ui_clicked(tr)) os_open_url(twin->website);
         ax = tr.x1;
     }
     if (e->site_only) ax = draw_site_tag(ax + 6 * s, ly + pill_h * 0.5f, e->site_only, hx + hw);
@@ -1290,7 +1285,7 @@ static B32 draw_detail(Rect p, SearchResult *e)
     B32 chot = ui_mouse_in(cb);
     ui_plate(cb, chot ? C_BUTTON_HI : C_BUTTON, 6 * s);
     ui_text_centered(ui.font.normal, cb, str8_lit("✕"), chot ? C_TEXT : C_DIM);
-    if (ui_clicked(cb)) { app.sel_id[0] = 0; app.sel_index = -1; ui_request_frame(); }
+    if (ui_clicked(cb)) { app.sel_id[0] = 0; app.sel_index = -1; wm_request_frame(); }
     return animating;
 }
 
@@ -1474,25 +1469,13 @@ static U32 downloads_watch_main(void *p)
     (void)p;
     Arena *a = arena_alloc(MB(64));
     String8List dirs = downloads_dirs(a);
-    HANDLE h[MAXIMUM_WAIT_OBJECTS];
-    DWORD n = 0;
-    for (String8Node *d = dirs.first; d && n < MAXIMUM_WAIT_OBJECTS; d = d->next) {
-        HANDLE w = FindFirstChangeNotificationW((WCHAR *)os_str16_from_8(a, d->string).str, FALSE,
-                                                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE);
-        if (w != INVALID_HANDLE_VALUE) h[n++] = w;
-    }
-    if (!n) return 0;
+    OS_DirWatch w = os_dir_watch_open(dirs);
+    if (!w.count) return 0;
     for (;;) {
-        DWORD r = WaitForMultipleObjects(n, h, FALSE, INFINITE);
-        if (r >= WAIT_OBJECT_0 + n) return 0;
-        FindNextChangeNotification(h[r - WAIT_OBJECT_0]);
-        U64 start = GetTickCount64();
-        for (;;) { // settle: wait for 400 ms without changes, or 3 s at most
-            r = WaitForMultipleObjects(n, h, FALSE, 400);
-            if (r == WAIT_TIMEOUT || GetTickCount64() - start > 3000) break;
-            if (r < WAIT_OBJECT_0 + n) FindNextChangeNotification(h[r - WAIT_OBJECT_0]);
-        }
-        PostMessageW(app.hwnd, WM_APP_DOWNLOADS_CHANGED, 0, 0);
+        if (!os_dir_watch_wait(&w, 0xFFFFFFFF)) return 0;
+        U64 start = os_now_ms();
+        while (os_dir_watch_wait(&w, 400) && os_now_ms() - start <= 3000) {} // settle: 400 ms without changes, or 3 s at most
+        wm_post(on_downloads_changed, 0, 0);
     }
 }
 
@@ -1501,15 +1484,13 @@ static void request_downloads_scan(void)
     if (!app.wow_root.size) return;
     if (app.dl_scan_queued) { app.dl_rescan_wanted = 1; return; } // a file may have landed after that scan looked
     app.dl_scan_queued = 1;
-    app.dl_last_scan_ms = GetTickCount64();
+    app.dl_last_scan_ms = os_now_ms();
     push_task(TASK_SCAN_DOWNLOADS, str8(0, 0));
 }
 
 static String8 fmt_ago(Arena *a, U64 mtime)
 {
-    FILETIME ft;
-    GetSystemTimeAsFileTime(&ft);
-    U64 now = ((((U64)ft.dwHighDateTime << 32) | ft.dwLowDateTime) - 116444736000000000ull) / 10000000ull;
+    U64 now = (U64)cat_now();
     U64 d = now > mtime ? now - mtime : 0;
     if (d < 60) return str8_lit("just now");
     if (d < 3600) return str8_pushf(a, "%llu min ago", d / 60);
@@ -1598,7 +1579,7 @@ static B32 draw_downloads(Rect area)
         String8 show = str8_lit("Show");
         Rect sb = rect(x - ui_button_width(show), by, x, by + bh);
         if (ui_button(sb, show, C_DIM, C_BUTTON, C_BUTTON_HI)) {
-            ui_shell_open_async(str8_lit("explorer.exe"), str8_pushf(fa, "/select,\"%.*s\"", S8F(it->path)));
+            os_shell_open_async(str8_lit("explorer.exe"), str8_pushf(fa, "/select,\"%.*s\"", S8F(it->path)));
         }
         x = sb.x0 - 8 * s;
         if (it->state == DL_INSTALLED) {

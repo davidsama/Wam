@@ -46,4 +46,59 @@ static void os_thread_start(OS_ThreadFunc *fn, void *param);
 typedef void OS_ParallelFunc(void *user, U64 index);
 static void os_parallel_for(U64 count, OS_ParallelFunc *fn, void *user);
 
+//- Threads talking to each other
+
+// A lock (not re-entrant). Zero is unlocked: no setup needed.
+typedef struct OS_Mutex { void *v; } OS_Mutex;
+static void os_mutex_lock(OS_Mutex *m);
+static void os_mutex_unlock(OS_Mutex *m);
+// A counting semaphore: each signal lets one wait through.
+typedef struct OS_Semaphore { void *h; } OS_Semaphore;
+static OS_Semaphore os_semaphore_alloc(U32 max_count);
+static void os_semaphore_signal(OS_Semaphore s);
+static void os_semaphore_wait(OS_Semaphore s);
+// An auto-reset event: signals while nobody waits collapse into one, a wait takes it.
+typedef struct OS_Event { void *h; } OS_Event;
+static OS_Event os_event_alloc(void);
+static void os_event_signal(OS_Event e);
+static void os_event_wait(OS_Event e);
+static S32 os_atomic_inc(volatile S32 *p);               // returns the new value
+static void os_atomic_store(volatile S32 *p, S32 v);
+// Memory that outlives an arena: messages handed from one thread to another.
+static void *os_alloc(U64 size);                         // zeroed; 0 on failure
+static void  os_free(void *p);
+static void  os_secure_zero(void *p, U64 size);          // not optimized away (it held a secret)
+
+//- Time
+
+static U64 os_now_ms(void);                              // monotonic, like os_now_us
+typedef struct OS_DateTime { U32 year, month, day, hour, minute, second; } OS_DateTime;
+static OS_DateTime os_local_now(void);
+static OS_DateTime os_utc_from_unix(S64 unix_secs);     // year 0 if it can't be represented
+
+//- More files
+
+static B32 os_append_file(String8 path, String8 data);  // creates it if needed
+static U64 os_file_size(String8 path);                   // 0 if it doesn't exist
+static B32 os_delete_file(String8 path);
+// Waits for changes in any of dirs (not their subfolders): file names, sizes, writes.
+typedef struct OS_DirWatch { void *h[32]; U32 count; } OS_DirWatch;
+static OS_DirWatch os_dir_watch_open(String8List dirs);
+static B32 os_dir_watch_wait(OS_DirWatch *w, U32 timeout_ms); // 1: something changed, 0: timed out (or nothing watched)
+// The bytes of the program's own RCDATA resource `name` (they stay mapped: no copy).
+static String8 os_resource(String8 name);
+
+//- The desktop
+
+// Opens a file, URL or program on a short-lived thread (it can pump messages for a while).
+static void os_shell_open_async(String8 file, String8 args);
+static void os_open_url(String8 url);                    // https:// only
+static String8 os_open_log;                              // testing: when set, opens are appended here instead
+static String8 os_clipboard_text(Arena *a);
+// Decodes a picture (PNG, JPEG, GIF, BMP, WebP if installed...) to BGRA with straight alpha:
+// scaled to exactly w x h, cropped to fill, or with fit scaled down (never up) to fit inside
+// w x h. Pixels are pushed on a; empty (w 0) if it can't.
+typedef struct OS_Image { U32 w, h; U8 *pixels; } OS_Image;
+static OS_Image os_image_decode(Arena *a, String8 data, U32 w, U32 h, B32 fit);
+
 #endif

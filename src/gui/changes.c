@@ -14,14 +14,14 @@ static void changes_open(String8 id)
     app.changes_scroll = (UI_Scroll){ 0 };
     changes_content_h = 0;
     push_task(TASK_CHANGES, id);
-    ui_request_frame();
+    wm_request_frame();
 }
 
 static void changes_close(void)
 {
     app.changes_open = 0;
     if (app.changes) { arena_release(app.changes->arena); app.changes = 0; }
-    ui_request_frame();
+    wm_request_frame();
 }
 
 static void changes_arrived(ChangesSnap *cs)
@@ -33,20 +33,20 @@ static void changes_arrived(ChangesSnap *cs)
 }
 
 // Keys while the popup is open (it takes them all, and the typing). Returns 1 if it was open.
-static B32 changes_event(UI_Event *e)
+static B32 changes_event(WM_Event *e)
 {
     if (!app.changes_open) return 0;
-    if (e->kind != UI_EVENT_KEY) return 1;
+    if (e->kind != WM_EVENT_KEY) return 1;
     F32 page = ui.height * 0.5f, line = 48 * ui.scale;
     UI_Scroll *sc = &app.changes_scroll;
-    UI_Key k = e->key;
-    if (k == UI_KEY_ESCAPE) changes_close();
-    else if (k == UI_KEY_DOWN) sc->target += line;
-    else if (k == UI_KEY_UP) sc->target -= line;
-    else if (k == UI_KEY_PAGE_DOWN || k == UI_KEY_SPACE) sc->target += page;
-    else if (k == UI_KEY_PAGE_UP) sc->target -= page;
-    else if (k == UI_KEY_HOME) sc->target = 0;
-    else if (k == UI_KEY_END) sc->target = 1e9f;
+    WM_Key k = e->key;
+    if (k == WM_KEY_ESCAPE) changes_close();
+    else if (k == WM_KEY_DOWN) sc->target += line;
+    else if (k == WM_KEY_UP) sc->target -= line;
+    else if (k == WM_KEY_PAGE_DOWN || k == WM_KEY_SPACE) sc->target += page;
+    else if (k == WM_KEY_PAGE_UP) sc->target -= page;
+    else if (k == WM_KEY_HOME) sc->target = 0;
+    else if (k == WM_KEY_END) sc->target = 1e9f;
     return 1;
 }
 

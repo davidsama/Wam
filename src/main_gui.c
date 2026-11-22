@@ -1,20 +1,26 @@
 // main_gui.c - wam.exe, unity build entry point for the GUI.
 //
 // Layers, bottom up:
-//   base/, os/        types, arenas, strings, JSON; the Win32 platform layer
+//   base/, os/        types, arenas, strings, JSON; the Win32 platform layer (files, threads, time,
+//                     the clipboard, shell open, picture decoding)
 //   core/             addon management
-//   render/, font/    D3D11 rect renderer, GDI glyph atlas
-//   ui/               a reusable immediate-mode UI library: widgets (ui.c) and the window (ui_win32.c)
+//   render/, font/    D3D11 rect renderer, DirectWrite (or GDI) glyph atlas
+//   wm/               the window: input, frame scheduling, posts and timers, the app-drawn title bar,
+//                     menus, the folder picker, the WebView2 download window (wm_win32.c, wm_webview.c)
+//   ui/               a reusable immediate-mode UI library on top of them, with no platform code
 //   gui/              wam's GUI on top of it: state, background tasks, views, window composition
-//   main_gui.c        keyboard handling, worker results, and startup
+//   main_gui.c        keyboard handling, worker results, and startup (wWinMain)
+//
+// Win32 is only below wm/ (and in wWinMain): ui/ and gui/ talk to the window through wm.h and to
+// the system through os.h.
 //
 // Event-driven: the window renders only when input, a resize, or a finished background
 // task asks for it (or while something animates). Idle = 0% CPU.
 //
 // Threading: one worker thread runs disk/network operations (sync, install, update, remove,
 // search) from a queue; lanes run the quick ones (listings, suggestions, the Downloads scan) on
-// their own threads. Each task gets its own arena and posts back an immutable snapshot; the UI
-// thread only ever reads snapshots.
+// their own threads. Each task gets its own arena and posts back an immutable snapshot (wm_post);
+// the UI thread only ever reads snapshots.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -57,29 +63,13 @@
 #else
 #include "font/font_dwrite.c"   // DirectWrite text, with font_dwrite.cpp linked in
 #endif
+#include "wm/wm.h"
+#include "wm/wm_win32.c"
+#include "wm/wm_webview.c"   // optional: the CurseForge download window (WebView2)
 #include "ui/ui.h"
 #include "ui/ui.c"
 #include "ui/ui_image.c"     // pictures from URLs, loaded in the background
-#include "ui/ui_win32.c"
-#include "ui/ui_webview.c"   // optional: the CurseForge download window (WebView2)
 
-#define WM_APP_SNAPSHOT  (WM_APP + 1)
-#define WM_APP_SEARCH    (WM_APP + 2)
-#define WM_APP_STATUS    (WM_APP + 3)
-#define WM_APP_TASK_DONE (WM_APP + 4)
-#define WM_APP_DOWNLOADS (WM_APP + 5)
-#define WM_APP_REFRESH_DONE (WM_APP + 6) // wParam: the listing request it answered
-#define WM_APP_SUGGEST     (WM_APP + 7) // lParam: SearchSnap of a typed search or a page
-#define WM_APP_SUGGEST_DONE (WM_APP + 8) // wParam: the suggestion request it answered
-#define WM_APP_DOWNLOADS_DONE (WM_APP + 9) // unused: WM_APP_DOWNLOADS carries the result
-#define WM_APP_DOWNLOADS_CHANGED (WM_APP + 10) // a download folder changed (from the watcher thread)
-#define WM_APP_PENDING   (WM_APP + 11) // lParam: PendingList (heap) of CurseForge files to fetch through their page
-#define WM_APP_CATALOG   (WM_APP + 12) // lParam: CatalogSnap (from the disk cache or the network)
-#define WM_APP_CATALOG_DONE (WM_APP + 13) // wParam: the catalog request it answered
-#define WM_APP_DETAILS   (WM_APP + 14) // lParam: DetailSnap
-#define WM_APP_DETAILS_DONE (WM_APP + 15) // wParam: the details request it answered
-#define WM_APP_CHANGES   (WM_APP + 16) // lParam: ChangesSnap
-#define WM_APP_CHANGES_DONE (WM_APP + 17) // (unused: WM_APP_CHANGES carries the result)
 #define FLAVOR_COUNT ((int)ArrayCount(wow_flavors))
 
 
@@ -153,8 +143,8 @@ static void waiting_web_done(void *user, String8 path, B32 ok, String8 error)
 static void waiting_fetch(PendingDownload *p)
 {
     p->opened = 1;
-    p->since_ms = GetTickCount64();
-    if (web_ok && !ui_web_busy()) {
+    p->since_ms = os_now_ms();
+    if (web_ok && !wm_web_busy()) {
         String8 dir = path_join(ui.frame_arena, os_get_env(ui.frame_arena, "TEMP"), str8_lit("wam-cf"));
         os_make_dirs(dir);
         String8 title = str8_pushf(ui.frame_arena, "Downloading %s from CurseForge", p->name);
@@ -162,16 +152,16 @@ static void waiting_fetch(PendingDownload *p)
                                   "this page. The download starts by itself in a few seconds; this window then closes and wam installs it. "
                                   "Close the window to cancel.", p->name);
         memcpy(web_fetching, p->id, sizeof(web_fetching));
-        if (ui_web_download(str8_cstring(p->url), title, note, dir, waiting_web_done, 0)) return;
+        if (wm_web_download(str8_cstring(p->url), title, note, dir, waiting_web_done, 0)) return;
         web_fetching[0] = 0;
     }
-    ui_open_url(str8_cstring(p->url));
+    os_open_url(str8_cstring(p->url));
 }
 
 // One window at a time: the next queued file when the window is free.
 static void waiting_fetch_next(void)
 {
-    if (web_ok && ui_web_busy()) return;
+    if (web_ok && wm_web_busy()) return;
     for (U32 i = 0; i < app.waiting_count; i += 1) {
         if (app.waiting[i].queued && !app.waiting[i].opened) { waiting_fetch(&app.waiting[i]); return; }
     }
@@ -202,7 +192,7 @@ static void waiting_add(PendingList *pl)
     if (pl->gen != app.root_gen) return;
     for (U32 i = 0; i < pl->count; i += 1) {
         PendingDownload *p = &pl->v[i];
-        p->since_ms = GetTickCount64();
+        p->since_ms = os_now_ms();
         U32 k = 0;
         while (k < app.waiting_count && strcmp(app.waiting[k].id, p->id) != 0) k += 1; // the same addon again: replace
         if (k == app.waiting_count) {
@@ -215,7 +205,7 @@ static void waiting_add(PendingList *pl)
         for (U32 k = 0; k < app.waiting_count; k += 1) {
             if (strcmp(app.waiting[k].id, pl->v[0].id) != 0) continue;
             app.waiting[k].queued = 1;
-            B32 now = !web_ok || !ui_web_busy();
+            B32 now = !web_ok || !wm_web_busy();
             if (now) waiting_fetch(&app.waiting[k]);
             worker_set_status(str8_pushf(ui.frame_arena, web_ok ? "%s can only come from CurseForge's own page: downloading it there%s."
                                                                 : "Opened CurseForge's download page for %s (only it may serve the file). wam installs it when the download finishes.",
@@ -231,7 +221,7 @@ static void waiting_add(PendingList *pl)
 // A new Downloads listing: install any archive a waiting file was expecting.
 static void waiting_match(DownloadsSnap *ds)
 {
-    U64 now_ms = GetTickCount64();
+    U64 now_ms = os_now_ms();
     for (U32 i = 0; i < app.waiting_count;) {
         PendingDownload *p = &app.waiting[i];
         if (p->gen != app.root_gen || now_ms - p->since_ms > 30 * 60 * 1000) { waiting_remove(i); continue; } // gave up
@@ -264,7 +254,7 @@ static void search_enter(void)
         app.query.len = 0;
     } else if (q.size) {
         // Search now (with a status message) instead of waiting for the typing pause.
-        KillTimer(app.hwnd, TIMER_SUGGEST);
+        wm_timer_stop(suggest_timer);
         suggest_due_ms = 0;
         paging_sync();
         Task t = make_task(TASK_SEARCH, q, 0, app.flavor);
@@ -275,24 +265,24 @@ static void search_enter(void)
     }
 }
 
-static void app_event(UI_Event *e)
+static void app_event(WM_Event *e)
 {
     // The picture viewer takes every key while it's open; so do the settings and changes popups.
     if (viewer_event(e) || settings_event(e) || changes_event(e)) return;
     B32 search = app.view == VIEW_SEARCH;
     char before[256]; U32 before_len = app.query.len; memcpy(before, app.query.s, sizeof(before));
-    if (e->kind == UI_EVENT_KEY) {
-        UI_Key k = e->key;
-        B32 ctrl = (e->mods & UI_MOD_CTRL) != 0;
-        if (ctrl && k == UI_KEY_COMMA) { settings_open(); return; }
+    if (e->kind == WM_EVENT_KEY) {
+        WM_Key k = e->key;
+        B32 ctrl = (e->mods & WM_MOD_CTRL) != 0;
+        if (ctrl && k == WM_KEY_COMMA) { settings_open(); return; }
         if (search && browse_key(k, ctrl)) return;
-        if (search && k == UI_KEY_RETURN && !browse_enter()) { search_enter(); return; } // (browse_enter: the selected row)
-        if (k == UI_KEY_F5) push_task(TASK_REFRESH, str8(0, 0));
+        if (search && k == WM_KEY_RETURN && !browse_enter()) { search_enter(); return; } // (browse_enter: the selected row)
+        if (k == WM_KEY_F5) push_task(TASK_REFRESH, str8(0, 0));
         if (ctrl && k == 'F') app.view = VIEW_SEARCH;
         if (ctrl && k == 'A' && app.view == VIEW_INSTALLED && app.snap) {
             for (U64 i = 0; i < app.snap->row_count; i += 1) keyset_add(&app.selected, app.snap->rows[i].key);
         }
-        if (k == UI_KEY_ESCAPE) {
+        if (k == WM_KEY_ESCAPE) {
             if (app.removing.count) keyset_clear(&app.removing);    // first: cancel a pending remove
             else if (search && app.sel_id[0]) { app.sel_id[0] = 0; app.sel_index = -1; } // first Esc: the selection
             else if (search) app.query.len = 0;
@@ -303,7 +293,7 @@ static void app_event(UI_Event *e)
     if (app.view == VIEW_SEARCH && (app.query.len != before_len || memcmp(before, app.query.s, sizeof(before)))) query_changed();
 }
 
-//- Window callbacks (the UI library's window calls these)
+//- Window callbacks (the window layer calls these)
 
 static void app_file_dropped(String8 path)
 {
@@ -315,102 +305,99 @@ static void app_file_dropped(String8 path)
 // Back from the browser? Look for new downloads (cheap: results are cached per file).
 static void app_activated(void) { request_downloads_scan(); }
 
-// The suggestion timer and the workers' results.
-static LRESULT app_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, B32 *handled)
+//- Workers' results (wm_post: on the UI thread, in the order they were posted)
+
+static void on_status(U64 param, void *ptr) { (void)param; (void)ptr; wm_request_frame(); }
+static void on_task_done(U64 id, void *ptr) { (void)ptr; if (app.pending) app.pending -= 1; feedback_task_done((U32)id); wm_request_frame(); }
+static void on_refresh_done(U64 id, void *ptr) { (void)ptr; if ((U32)id > app.refresh_served) app.refresh_served = (U32)id; wm_request_frame(); }
+static void on_suggest_done(U64 id, void *ptr) { (void)ptr; if ((U32)id > app.suggest_served) app.suggest_served = (U32)id; wm_request_frame(); }
+static void on_catalog_done(U64 id, void *ptr) { (void)ptr; if ((U32)id > app.catalog_served) app.catalog_served = (U32)id; wm_request_frame(); }
+static void on_details_done(U64 id, void *ptr) { (void)ptr; if ((U32)id > app.details_served) app.details_served = (U32)id; wm_request_frame(); }
+static void on_details(U64 param, void *ds) { (void)param; details_arrived((DetailSnap *)ds); wm_request_frame(); }
+static void on_changes(U64 param, void *cs) { (void)param; changes_arrived((ChangesSnap *)cs); wm_request_frame(); }
+static void on_downloads_changed(U64 param, void *ptr) { (void)param; (void)ptr; request_downloads_scan(); }
+
+// A typed search (Enter: with a status message), a suggestion, or a page of a sort.
+static void on_search(U64 param, void *ptr)
 {
-    (void)hwnd;
-    *handled = 1;
-    switch (msg) {
-        case WM_TIMER: if (wp == TIMER_SUGGEST) suggest_timer(); else if (wp == TIMER_DETAILS) details_timer(); return 0;
-        case WM_APP_SUGGEST: {
-            SearchSnap *ss = (SearchSnap *)lp;
-            search_result_arrived(ss);
-            arena_release(ss->arena);
-            ui_request_frame();
-            return 0;
-        }
-        case WM_APP_CATALOG: {
-            CatalogSnap *cs = (CatalogSnap *)lp;
-            catalog_arrived(cs);
-            arena_release(cs->arena);
-            ui_request_frame();
-            return 0;
-        }
-        case WM_APP_CATALOG_DONE: if ((U32)wp > app.catalog_served) app.catalog_served = (U32)wp; ui_request_frame(); return 0;
-        case WM_APP_DETAILS: details_arrived((DetailSnap *)lp); ui_request_frame(); return 0;
-        case WM_APP_CHANGES: changes_arrived((ChangesSnap *)lp); ui_request_frame(); return 0;
-        case WM_APP_CHANGES_DONE: return 0;
-        case WM_APP_DETAILS_DONE: if ((U32)wp > app.details_served) app.details_served = (U32)wp; ui_request_frame(); return 0;
-        case WM_APP_SUGGEST_DONE: if ((U32)wp > app.suggest_served) app.suggest_served = (U32)wp; ui_request_frame(); return 0;
-        case WM_APP_SNAPSHOT: {
-            Snapshot *snap = (Snapshot *)lp;
-            if (snap->gen != app.root_gen) { arena_release(snap->arena); return 0; } // from the previous install
-            // Keep it for its flavor (switching back is instant) unless what we have was read later.
-            Snapshot **slot = &app.snaps[snap->flavor];
-            if (*slot && (*slot)->seq > snap->seq) { arena_release(snap->arena); return 0; }
-            if (*slot) arena_release((*slot)->arena);
-            *slot = snap;
-            if (snap->flavor != app.flavor) return 0;
-            app.snap = snap;
-            // Forget selected rows that no longer exist (removed, or now tracked under a new id).
-            KeySet *sets[2] = { &app.selected, &app.removing };
-            for (int k = 0; k < 2; k += 1) {
-                for (U32 i = 0; i < sets[k]->count;) {
-                    String8 key = str8_cstring(sets[k]->keys[i]);
-                    B32 found = 0;
-                    for (U64 r = 0; r < snap->row_count && !found; r += 1) found = str8_match(snap->rows[r].key, key, 1);
-                    if (found) i += 1; else keyset_remove(sets[k], key);
-                }
-            }
-            request_downloads_scan(); // installed state may have changed
-            ui_request_frame();
-            return 0;
-        }
-        case WM_APP_SEARCH: {
-            SearchSnap *ss = (SearchSnap *)lp; // Enter: the same as a typed search, with a status message
-            search_result_arrived(ss);
-            arena_release(ss->arena);
-            ui_request_frame();
-            return 0;
-        }
-        case WM_APP_DOWNLOADS: {
-            DownloadsSnap *ds = (DownloadsSnap *)lp;
-            app.dl_scan_queued = 0;
-            if (app.dl_rescan_wanted) { app.dl_rescan_wanted = 0; request_downloads_scan(); }
-            if (ds->flavor != app.flavor || ds->gen != app.root_gen) { arena_release(ds->arena); request_downloads_scan(); return 0; }
-            if (app.downloads) arena_release(app.downloads->arena);
-            app.downloads = ds;
-            waiting_match(ds);
-            ui_request_frame();
-            return 0;
-        }
-        case WM_APP_DOWNLOADS_CHANGED: request_downloads_scan(); return 0; // the folder watcher saw something
-        case WM_APP_PENDING: {
-            PendingList *pl = (PendingList *)lp;
-            waiting_add(pl);
-            HeapFree(GetProcessHeap(), 0, pl);
-            ui_request_frame();
-            return 0;
-        }
-        case WM_APP_STATUS: ui_request_frame(); return 0;
-        case WM_APP_TASK_DONE: if (app.pending) app.pending -= 1; feedback_task_done((U32)wp); ui_request_frame(); return 0;
-        case WM_APP_REFRESH_DONE: if ((U32)wp > app.refresh_served) app.refresh_served = (U32)wp; ui_request_frame(); return 0;
-    }
-    *handled = 0;
-    return 0;
+    (void)param;
+    SearchSnap *ss = (SearchSnap *)ptr;
+    search_result_arrived(ss);
+    arena_release(ss->arena);
+    wm_request_frame();
 }
+
+static void on_catalog(U64 param, void *ptr)
+{
+    (void)param;
+    CatalogSnap *cs = (CatalogSnap *)ptr;
+    catalog_arrived(cs);
+    arena_release(cs->arena);
+    wm_request_frame();
+}
+
+static void on_snapshot(U64 param, void *ptr)
+{
+    (void)param;
+    Snapshot *snap = (Snapshot *)ptr;
+    if (snap->gen != app.root_gen) { arena_release(snap->arena); return; } // from the previous install
+    // Keep it for its flavor (switching back is instant) unless what we have was read later.
+    Snapshot **slot = &app.snaps[snap->flavor];
+    if (*slot && (*slot)->seq > snap->seq) { arena_release(snap->arena); return; }
+    if (*slot) arena_release((*slot)->arena);
+    *slot = snap;
+    if (snap->flavor != app.flavor) return;
+    app.snap = snap;
+    // Forget selected rows that no longer exist (removed, or now tracked under a new id).
+    KeySet *sets[2] = { &app.selected, &app.removing };
+    for (int k = 0; k < 2; k += 1) {
+        for (U32 i = 0; i < sets[k]->count;) {
+            String8 key = str8_cstring(sets[k]->keys[i]);
+            B32 found = 0;
+            for (U64 r = 0; r < snap->row_count && !found; r += 1) found = str8_match(snap->rows[r].key, key, 1);
+            if (found) i += 1; else keyset_remove(sets[k], key);
+        }
+    }
+    request_downloads_scan(); // installed state may have changed
+    wm_request_frame();
+}
+
+static void on_downloads(U64 param, void *ptr)
+{
+    (void)param;
+    DownloadsSnap *ds = (DownloadsSnap *)ptr;
+    app.dl_scan_queued = 0;
+    if (app.dl_rescan_wanted) { app.dl_rescan_wanted = 0; request_downloads_scan(); }
+    if (ds->flavor != app.flavor || ds->gen != app.root_gen) { arena_release(ds->arena); request_downloads_scan(); return; }
+    if (app.downloads) arena_release(app.downloads->arena);
+    app.downloads = ds;
+    waiting_match(ds);
+    wm_request_frame();
+}
+
+static void on_pending(U64 param, void *ptr)
+{
+    (void)param;
+    PendingList *pl = (PendingList *)ptr;
+    waiting_add(pl);
+    os_free(pl);
+    wm_request_frame();
+}
+
+// Each frame: the UI library sets up, app_frame (frame.c) draws.
+static B32 app_window_frame(WM_Frame *f) { return ui_frame(f, app_frame); }
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
 {
-    (void)prev; (void)cmdline;
+    (void)inst; (void)prev; (void)cmdline;
     app.t_start = os_now_us();
     app.arena = arena_alloc(GB(1));
     ui.frame_arena = arena_alloc(GB(1));
-    ui_open_log = os_get_env(app.arena, "WAM_TEST_OPEN_LOG"); // testing: log link opens instead
+    os_open_log = os_get_env(app.arena, "WAM_TEST_OPEN_LOG"); // testing: log link opens instead
     ui_frame_log = os_get_env(app.arena, "WAM_TEST_FRAME_LOG"); // testing: log frame times
     ui_shot_dir = os_get_env(app.arena, "WAM_TEST_SHOT_DIR");   // testing: F12 saves the frame there
     ui_image_log = os_get_env(app.arena, "WAM_TEST_IMAGE_LOG"); // testing: log pictures that fail to load
-    ui_web_data_dir = path_join(app.arena, path_join(app.arena, os_get_env(app.arena, "LOCALAPPDATA"), str8_lit("wam")), str8_lit("webview2"));
+    wm_web_data_dir = path_join(app.arena, path_join(app.arena, os_get_env(app.arena, "LOCALAPPDATA"), str8_lit("wam")), str8_lit("webview2"));
 
     int argc = 0;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -431,9 +418,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     detect_flavors();
     session_restore_flavor(); // the one used last time, if this install still has it
 
-    static UI_App desc = {
-        L"wam", L"WoW Addon Manager", 1100, 700, 1, 820, 460, 1,
-        app_frame, app_message, app_file_dropped, app_activated,
+    static WM_App desc = {
+        "wam", "WoW Addon Manager", 1100, 700, 1, 820, 460, 1,
+        app_window_frame, app_file_dropped, app_activated,
     };
     {
         Temp t = temp_begin(app.arena);
@@ -441,21 +428,22 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         desc.x = win.x; desc.y = win.y; desc.w = win.w; desc.h = win.h; desc.maximized = win.maximized;
         temp_end(t);
     }
-    if (!ui_window_open(inst, &desc)) return 1;
+    if (!wm_window_open(&desc)) return 1;
+    if (!ui_init()) {
+        MessageBoxW(0, L"Could not initialize Direct3D 11.", L"WoW Addon Manager", MB_OK | MB_ICONERROR);
+        return 1;
+    }
     ui.theme = ui_theme_tinker();
-    app.hwnd = ui_hwnd;
-    web_ok = ui_web_available() && !os_get_env(app.arena, "WAM_TEST_NO_WEBVIEW").size; // testing: force the browser path
+    web_ok = wm_web_available() && !os_get_env(app.arena, "WAM_TEST_NO_WEBVIEW").size; // testing: force the browser path
 
-    InitializeCriticalSection(&task_lock);
-    InitializeCriticalSection(&status_lock);
-    task_sem = CreateSemaphoreW(0, 0, TASK_QUEUE, 0);
+    task_sem = os_semaphore_alloc(TASK_QUEUE);
     os_thread_start(worker_main, 0);
-    lane_start(&refresh_lane, WM_APP_REFRESH_DONE);
-    lane_start(&suggest_lane, WM_APP_SUGGEST_DONE);
-    lane_start(&downloads_lane, WM_APP_DOWNLOADS_DONE);
-    lane_start(&catalog_lane, WM_APP_CATALOG_DONE);
-    lane_start(&details_lane, WM_APP_DETAILS_DONE);
-    lane_start(&changes_lane, WM_APP_CHANGES_DONE);
+    lane_start(&refresh_lane, on_refresh_done);
+    lane_start(&suggest_lane, on_suggest_done);
+    lane_start(&downloads_lane, 0);  // (on_downloads carries the result)
+    lane_start(&catalog_lane, on_catalog_done);
+    lane_start(&details_lane, on_details_done);
+    lane_start(&changes_lane, 0);    // (on_changes carries the result)
     app.category = app.subcategory = -1;
     {
         Temp t = temp_begin(app.arena);
@@ -473,8 +461,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         push_task(TASK_REFRESH, str8(0, 0)); // show local state right away
         push_task(TASK_SYNC, str8(0, 0));    // then recognize + check updates (GitHub/WoWInterface need no key)
     }
-    int code = ui_window_run(show);
-    UI_WindowPlace *p = &ui_window_place;
+    int code = wm_window_run(show);
+    WM_WindowPlace *p = &wm_window_place;
     if (p->w > 0 && p->h > 0) wam_save_window((WamWindow){ p->x, p->y, p->w, p->h, p->maximized });
     session_save();
     return code;

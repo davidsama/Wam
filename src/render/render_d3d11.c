@@ -11,9 +11,6 @@
 // icons, and one full-size picture (sized to it, e.g. a screenshot being viewed).
 // Picture rects are still clipped by the SDF, so they get rounded corners.
 
-typedef struct V4 { F32 x, y, z, w; } V4;
-typedef struct Rect { F32 x0, y0, x1, y1; } Rect;
-
 typedef struct R_Rect {
     F32 dst[4];
     F32 src[4];
@@ -139,8 +136,10 @@ static void r_resize_buffers(U32 w, U32 h);
 
 #define R_IMAGES_SIZE 2048 // the image atlas, BGRA
 
-static B32 r_init(HWND hwnd, U32 atlas_w, U32 atlas_h)
+// window: the native window to draw into (wm_window_handle(): an HWND).
+static B32 r_init(void *window, U32 atlas_w, U32 atlas_h)
 {
+    HWND hwnd = (HWND)window;
     r_state = (R_State *)VirtualAlloc(0, sizeof(R_State), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     R_State *r = r_state;
 

@@ -59,14 +59,14 @@ static void settings_open(void)
     app.settings_fresh = 1;
     app.settings_note[0] = 0;
     ui_text_clear(&app.wago_entry);
-    ui_request_frame();
+    wm_request_frame();
 }
 
 static void settings_close(void)
 {
     app.settings_open = 0;
     ui_text_clear(&app.wago_entry); // it may hold a key
-    ui_request_frame();
+    wm_request_frame();
 }
 
 static void settings_note(char *text, B32 is_error)
@@ -85,7 +85,7 @@ static void settings_save_wago(B32 remove)
     } else if (!wago_save_key(key)) {
         settings_note(remove ? "Could not delete the saved key" : "Could not save the key", 1);
     } else {
-        SecureZeroMemory(app.wago_key, sizeof(app.wago_key));
+        os_secure_zero(app.wago_key, sizeof(app.wago_key));
         memcpy(app.wago_key, key.str, key.size);
         settings_note(key.size ? "Saved. Checking which installed addons are on Wago..." : "Removed the saved key", 0);
         if (key.size) push_task(TASK_SYNC, str8(0, 0));
@@ -96,12 +96,12 @@ static void settings_save_wago(B32 remove)
 
 // Keys and typing while the popup is open (it takes them all): the Wago key field.
 // Returns 1 if it was open.
-static B32 settings_event(UI_Event *e)
+static B32 settings_event(WM_Event *e)
 {
     if (!app.settings_open) return 0;
-    if (e->kind == UI_EVENT_KEY && e->key == UI_KEY_ESCAPE) { settings_close(); return 1; }
+    if (e->kind == WM_EVENT_KEY && e->key == WM_KEY_ESCAPE) { settings_close(); return 1; }
     if (app.wago_from_env) return 1; // (the field is off: the key comes from the environment)
-    if (e->kind == UI_EVENT_KEY && e->key == UI_KEY_RETURN) settings_save_wago(0);
+    if (e->kind == WM_EVENT_KEY && e->key == WM_KEY_RETURN) settings_save_wago(0);
     else if (ui_text_edit(&app.wago_entry, e)) app.settings_note[0] = 0;
     return 1;
 }
@@ -123,7 +123,7 @@ static B32 settings_folder_button(F32 *x, F32 y, char *label, String8 path)
     F32 bw = ui_button_width(l);
     Rect b = rect(*x, y, *x + bw, y + 28 * ui.scale);
     *x = b.x1 + 8 * ui.scale;
-    if (ui_button(b, l, C_TEXT, C_BUTTON, C_BUTTON_HI)) ui_shell_open_async(path, str8(0, 0));
+    if (ui_button(b, l, C_TEXT, C_BUTTON, C_BUTTON_HI)) os_shell_open_async(path, str8(0, 0));
     return 1;
 }
 
@@ -182,7 +182,7 @@ static void draw_settings(void)
         F32 bw = ui_button_width(change);
         String8 path = app.wow_root.size ? app.wow_root : str8_lit("No folder chosen");
         f_draw_text(ui.font.normal, x, y + (28 * s - ui.font.normal->line_height) * 0.5f, path, app.wow_root.size ? C_TEXT : C_FAINT, w - bw - 16 * s);
-        if (ui_button(rect(x + w - bw, y, x + w, y + 28 * s), change, C_TEXT, C_BUTTON, C_BUTTON_HI)) ui_defer(browse_for_root);
+        if (ui_button(rect(x + w - bw, y, x + w, y + 28 * s), change, C_TEXT, C_BUTTON, C_BUTTON_HI)) wm_defer(browse_for_root);
         y += 28 * s + 22 * s;
     }
 
@@ -208,8 +208,8 @@ static void draw_settings(void)
         F32 iw = ui_button_width(issues), rw = ui_button_width(releases);
         f_draw_text(ui.font.normal, x, y + (28 * s - ui.font.normal->line_height) * 0.5f, str8_lit("wam " WAM_VERSION), C_TEXT, w - iw - rw - 32 * s);
         Rect ib = rect(x + w - iw, y, x + w, y + 28 * s), rb = rect(ib.x0 - 8 * s - rw, y, ib.x0 - 8 * s, y + 28 * s);
-        if (ui_button(rb, releases, C_TEXT, C_BUTTON, C_BUTTON_HI)) ui_open_url(str8_lit(WAM_PUBLIC_URL "/releases"));
-        if (ui_button(ib, issues, C_TEXT, C_BUTTON, C_BUTTON_HI)) ui_open_url(str8_lit(WAM_PUBLIC_URL "/issues"));
+        if (ui_button(rb, releases, C_TEXT, C_BUTTON, C_BUTTON_HI)) os_open_url(str8_lit(WAM_PUBLIC_URL "/releases"));
+        if (ui_button(ib, issues, C_TEXT, C_BUTTON, C_BUTTON_HI)) os_open_url(str8_lit(WAM_PUBLIC_URL "/issues"));
         y += 28 * s;
     }
     y += 24 * s;

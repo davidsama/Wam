@@ -148,7 +148,7 @@ static void cat_part_fetch(void *user, U64 i)
     cs->arena = ca; cs->flavor = p->flavor; cs->gen = p->gen; cs->saved = cat_now();
     cat_init(&cs->cat, ca);
     for (U64 k = 0; k < p->cat.count; k += 1) cat_put(&cs->cat, &p->cat.v[k]);
-    PostMessageW(app.hwnd, WM_APP_CATALOG, 0, (LPARAM)cs);
+    wm_post(on_catalog, 0, cs);
 }
 
 static void run_task(Task *t)
@@ -163,7 +163,7 @@ static void run_task(Task *t)
     }
     Mgr *m = mgr_open(a, addons_dir, app.api_key);
     m->wago_key = str8_copy(a, str8_cstring(t->wago_key));
-    SecureZeroMemory(t->wago_key, sizeof(t->wago_key));
+    os_secure_zero(t->wago_key, sizeof(t->wago_key));
     m->status = worker_status_cb;
     m->progress = worker_progress_cb;
     if (m->state_unreadable && t->kind != TASK_SEARCH && t->kind != TASK_SUGGEST && t->kind != TASK_CATALOG && t->kind != TASK_DETAILS && t->kind != TASK_CHANGES) {
@@ -181,7 +181,7 @@ static void run_task(Task *t)
         ds->list = downloads_scan(a, downloads_dirs(a), 1);
         downloads_compare(a, &ds->list, addons_dir);
         downloads_mark_new(a, &ds->list);
-        PostMessageW(app.hwnd, WM_APP_DOWNLOADS, 0, (LPARAM)ds);
+        wm_post(on_downloads, 0, ds);
         return;
     }
 
@@ -199,7 +199,7 @@ static void run_task(Task *t)
         ss->v = mgr_search_page(m, ss->query, cf_sorts[t->sort % SORT_COUNT], t->index, &ss->count, &ss->cf_count);
         ss->failed = !ss->v;
         if (!ss->v && !quiet) worker_set_status(m->error, 1);
-        PostMessageW(app.hwnd, quiet ? WM_APP_SUGGEST : WM_APP_SEARCH, 0, (LPARAM)ss);
+        wm_post(on_search, 0, ss);
         return;
     }
 
@@ -208,7 +208,7 @@ static void run_task(Task *t)
         DetailSnap *ds = push_struct(a, DetailSnap);
         ds->arena = a; ds->flavor = t->flavor; ds->gen = t->gen;
         ds->d = cat_details(m, str8_copy(a, str8_cstring(t->text)));
-        PostMessageW(app.hwnd, WM_APP_DETAILS, 0, (LPARAM)ds);
+        wm_post(on_details, 0, ds);
         return;
     }
 
@@ -217,7 +217,7 @@ static void run_task(Task *t)
         ChangesSnap *cs = push_struct(a, ChangesSnap);
         cs->arena = a; cs->flavor = t->flavor; cs->gen = t->gen;
         cs->c = mgr_changes(m, str8_copy(a, str8_cstring(t->text)));
-        PostMessageW(app.hwnd, WM_APP_CHANGES, 0, (LPARAM)cs);
+        wm_post(on_changes, 0, cs);
         return;
     }
 
@@ -246,7 +246,7 @@ static void run_task(Task *t)
                 nwant = nmissing;
                 cs->final = fresh && !nwant;
                 S64 saved = cs->saved;
-                PostMessageW(app.hwnd, WM_APP_CATALOG, 0, (LPARAM)cs);
+                wm_post(on_catalog, 0, cs);
                 if (fresh && nwant) {
                     // Just those, then into the cache too (reread: the UI has the copy above).
                     CatalogSnap *top = push_struct(a, CatalogSnap);
@@ -262,7 +262,7 @@ static void run_task(Task *t)
                         }
                         arena_release(ra);
                     }
-                    PostMessageW(app.hwnd, WM_APP_CATALOG, 0, (LPARAM)top);
+                    wm_post(on_catalog, 0, top);
                     return;
                 }
             } else {
@@ -296,7 +296,7 @@ static void run_task(Task *t)
                 cs->saved = cat_now();
                 cat_save(&cs->cat, path, m->client, cs->saved);
             }
-            PostMessageW(app.hwnd, WM_APP_CATALOG, 0, (LPARAM)cs); // the UI releases the arena
+            wm_post(on_catalog, 0, cs); // the UI releases the arena
         } else {
             arena_release(a);
         }
@@ -354,7 +354,7 @@ static void run_task(Task *t)
     if (m->manual_count) {
         // Files only CurseForge's own page may serve: hand them to the UI, which opens the page (or offers
         // to) and installs each archive when the browser saves it.
-        PendingList *pl = (PendingList *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(PendingList));
+        PendingList *pl = (PendingList *)os_alloc(sizeof(PendingList));
         if (pl) {
             pl->flavor = t->flavor;
             pl->gen = t->gen;
@@ -370,7 +370,7 @@ static void run_task(Task *t)
                 p->flavor = t->flavor;
                 p->gen = t->gen;
             }
-            PostMessageW(app.hwnd, WM_APP_PENDING, 0, (LPARAM)pl);
+            if (!wm_post(on_pending, 0, pl)) os_free(pl);
         }
     }
 
@@ -382,33 +382,33 @@ static void run_task(Task *t)
 
     Snapshot *snap = build_snapshot(a, m, &scan, t->flavor, scan_ms);
     snap->gen = t->gen;
-    snap->seq = t->seq ? t->seq : InterlockedIncrement(&snap_seq); // listings took theirs before reading
-    PostMessageW(app.hwnd, WM_APP_SNAPSHOT, 0, (LPARAM)snap);
+    snap->seq = t->seq ? t->seq : os_atomic_inc(&snap_seq); // listings took theirs before reading
+    wm_post(on_snapshot, 0, snap);
 }
 
 static U32 lane_main(void *p)
 {
     Lane *lane = (Lane *)p;
     for (;;) {
-        WaitForSingleObject(lane->event, INFINITE);
-        EnterCriticalSection(&lane->lock);
+        os_event_wait(lane->event);
+        os_mutex_lock(&lane->lock);
         B32 have = lane->full;
         Task t = lane->slot;
         U32 id = lane->id;
         lane->full = 0;
-        LeaveCriticalSection(&lane->lock);
+        os_mutex_unlock(&lane->lock);
         if (!have) continue;
-        t.seq = InterlockedIncrement(&snap_seq); // taken before reading the state
+        t.seq = os_atomic_inc(&snap_seq); // taken before reading the state
         run_task(&t);
-        PostMessageW(app.hwnd, lane->done_msg, (WPARAM)id, 0);
+        if (lane->done) wm_post(lane->done, id, 0);
     }
 }
 
-static void lane_start(Lane *lane, UINT done_msg)
+// done (optional): told on the UI thread which request the lane just answered.
+static void lane_start(Lane *lane, WM_PostFunc *done)
 {
-    InitializeCriticalSection(&lane->lock);
-    lane->event = CreateEventW(0, FALSE, FALSE, 0);
-    lane->done_msg = done_msg;
+    lane->event = os_event_alloc();
+    lane->done = done;
     os_thread_start(lane_main, lane);
 }
 
@@ -424,24 +424,19 @@ static void task_log(Task *t, U64 start_us, U64 end_us)
     String8 local = os_get_env(a, "LOCALAPPDATA");
     if (local.size) {
         String8 dir = path_join(a, local, str8_lit("wam")), path = path_join(a, dir, str8_lit("tasks.log"));
-        WIN32_FILE_ATTRIBUTE_DATA fa;
-        if (GetFileAttributesExW((WCHAR *)os_path16(a, path).str, GetFileExInfoStandard, &fa) && (fa.nFileSizeHigh || fa.nFileSizeLow > 256 * 1024)) {
-            os_replace_file(path, path_join(a, dir, str8_lit("tasks.old.log")));
-        }
-        SYSTEMTIME st;
-        GetLocalTime(&st);
+        if (os_file_size(path) > 256 * 1024) os_replace_file(path, path_join(a, dir, str8_lit("tasks.old.log")));
+        OS_DateTime st = os_local_now();
         String8 what = str8_cstring(t->text);
         U64 nl = str8_find(what, 0, str8_lit("\n"), 0), lines = 1;
         for (U64 k = 0; k < what.size; k += 1) lines += what.str[k] == '\n';
         if (t->kind == TASK_INSTALL_DOWNLOADED) what = path_filename(str8_prefix(what, nl)); // a path, then the file's details
         else if (nl < what.size) what = str8_pushf(a, "%.*s (+%llu more)", (int)nl, what.str, lines - 1);
         String8 line = str8_pushf(a, "%04u-%02u-%02u %02u:%02u:%02u  #%-4u %-18s waited %6.2f s  ran %6.2f s  %.*s\r\n",
-                                  st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, t->id,
+                                  st.year, st.month, st.day, st.hour, st.minute, st.second, t->id,
                                   (U32)t->kind < ArrayCount(kinds) ? kinds[t->kind] : "?",
                                   (F64)(start_us - t->queued_us) / 1e6, (F64)(end_us - start_us) / 1e6, (int)Min(what.size, 200), what.str);
         os_make_dirs(dir);
-        HANDLE f = CreateFileW((WCHAR *)os_path16(a, path).str, FILE_APPEND_DATA, FILE_SHARE_READ, 0, OPEN_ALWAYS, 0, 0);
-        if (f != INVALID_HANDLE_VALUE) { DWORD wrote; WriteFile(f, line.str, (DWORD)line.size, &wrote, 0); CloseHandle(f); }
+        os_append_file(path, line);
     }
     scratch_end(scratch);
 }
@@ -450,17 +445,17 @@ static U32 worker_main(void *p)
 {
     (void)p;
     for (;;) {
-        WaitForSingleObject(task_sem, INFINITE);
-        EnterCriticalSection(&task_lock);
+        os_semaphore_wait(task_sem);
+        os_mutex_lock(&task_lock);
         Task t = task_q[task_head++ % TASK_QUEUE];
-        LeaveCriticalSection(&task_lock);
+        os_mutex_unlock(&task_lock);
         U64 start = os_now_us();
-        InterlockedExchange(&work_permille, -1);
-        InterlockedExchange(&work_task, (LONG)t.id);
+        os_atomic_store(&work_permille, -1);
+        os_atomic_store(&work_task, (S32)t.id);
         run_task(&t);
-        InterlockedExchange(&work_task, 0);
+        os_atomic_store(&work_task, 0);
         task_log(&t, start, os_now_us());
-        PostMessageW(app.hwnd, WM_APP_TASK_DONE, (WPARAM)t.id, 0);
+        wm_post(on_task_done, t.id, 0);
     }
 }
 
@@ -499,7 +494,7 @@ static U32 image_cache_prune(void *p)
     U64 now = (U64)cat_now();
     for (U64 i = 0; i < files.count; i += 1) {
         if (files.v[i].is_dir || now - files.v[i].mtime < 30ull * 86400) continue;
-        DeleteFileW((WCHAR *)os_str16_from_8(a, path_join(a, dir, files.v[i].name)).str);
+        os_delete_file(path_join(a, dir, files.v[i].name));
     }
     arena_release(a);
     return 0;

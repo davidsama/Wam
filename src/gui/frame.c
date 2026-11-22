@@ -2,7 +2,7 @@
 // actions), the remove confirmation bar, the content panel with the current view, and the status bar.
 // Also switching flavors and installs. Part of main_gui.c's unity build.
 
-static void app_event(UI_Event *e); // main_gui.c: keys and typing
+static void app_event(WM_Event *e); // main_gui.c: keys and typing
 
 //- Frame
 
@@ -14,10 +14,10 @@ static void switch_flavor(int f)
     if (app.downloads) { arena_release(app.downloads->arena); app.downloads = 0; } // installed state differs per flavor
     keyset_clear(&app.selected);
     keyset_clear(&app.removing);
-    EnterCriticalSection(&status_lock); // the last message was about the other flavor
+    os_mutex_lock(&status_lock); // the last message was about the other flavor
     status_text[0] = status_url[0] = 0;
     status_is_error = 0;
-    LeaveCriticalSection(&status_lock);
+    os_mutex_unlock(&status_lock);
     push_task(TASK_REFRESH, str8(0, 0));
     catalog_reset(); // availability differs per game version; loads this flavor's catalog
 }
@@ -66,7 +66,7 @@ static void browse_for_root(void)
 {
     String8 test_pick = os_get_env(ui.frame_arena, "WAM_TEST_PICK"); // testing: skip the dialog, "pick" this folder
     if (test_pick.size) { pick_root_path(test_pick); return; }
-    String8 path = ui_pick_folder(ui.frame_arena, L"Select your World of Warcraft folder");
+    String8 path = wm_pick_folder(ui.frame_arena, str8_lit("Select your World of Warcraft folder"));
     if (path.size) pick_root_path(path);
 }
 
@@ -90,7 +90,7 @@ static void show_root_menu(void)
     U32 root_count = n;
     if (root_count) items[n++] = str8_lit("-");
     items[n++] = str8_lit("Browse for another folder...");
-    S32 pick = ui_popup_menu(app.root_btn, items, n, checked);
+    S32 pick = wm_popup_menu(app.root_btn, items, n, checked);
     if (pick == (S32)n - 1) browse_for_root();
     else if (pick >= 0 && (U32)pick < root_count) set_wow_root(items[pick]);
 }
@@ -101,7 +101,7 @@ static B32 app_frame(void)
     Arena *fa = ui.frame_arena;
     F32 s = ui.scale;
     F32 W = ui.width, H = ui.height;
-    UI_Input *in = &ui.in;
+    WM_Input *in = &ui.in;
     // Keys and typing since the last frame first, so this frame shows what they did.
     for (U32 i = 0; i < ui.event_count; i += 1) app_event(&ui.events[i]);
     Snapshot *snap = app.snap;
@@ -115,7 +115,7 @@ static B32 app_frame(void)
     F32 header_h = 56 * s;
     r_rect_gradient(rect(0, 0, W, header_h), ui_mix(C_PANEL, C_HOVER, 0.6f), C_PANEL, 0, 0, 0, 0);
     // The header is the window's title bar: what isn't a widget in it drags the window.
-    ui_caption(app.viewer_open || app.settings_open || app.changes_open ? 0 : header_h);
+    wm_caption(app.viewer_open || app.settings_open || app.changes_open ? 0 : header_h);
     // What fits: the flavor tabs always do. When the window is narrow, the name goes first (the logo
     // stays), then the game version, and then the install button shrinks to a folder icon.
     F32 tabs_w = 0;
@@ -131,7 +131,7 @@ static B32 app_frame(void)
         F32 bh = 28 * s;
         Rect b = rect(hright - bh, (header_h - bh) * 0.5f, hright, (header_h + bh) * 0.5f);
         B32 hot = ui_mouse_in(b);
-        ui_caption_hole(b);
+        wm_caption_hole(b);
         ui_plate(b, hot ? C_BUTTON_HI : C_BUTTON, 6 * s);
         ui_cog((b.x0 + b.x1) * 0.5f, (b.y0 + b.y1) * 0.5f, 8 * s, hot ? 0.26f : 0, hot ? C_TEXT : C_DIM); // turns a little on hover
         if (hot && in->released && point_in(b, in->press_x, in->press_y)) settings_open();
@@ -157,7 +157,7 @@ static B32 app_frame(void)
         F32 bw = f_text_width(ui.font.normal, label) + 26 * s, bh = 28 * s;
         Rect b = rect(x, (header_h - bh) * 0.5f, x + bw, (header_h + bh) * 0.5f);
         B32 active = f == app.flavor, hot = ui_mouse_in(b);
-        ui_caption_hole(b);
+        wm_caption_hole(b);
         if (active) { ui_plate(b, C_ACCENT_BG, bh * 0.5f); ui_text_centered(ui.font.normal, b, label, C_TEXT); }
         else ui_pill(b, label, ui.font.normal, hot ? C_TEXT : C_DIM, hot ? C_HOVER : ui_hex(0, 0));
         if (hot && in->released && point_in(b, in->press_x, in->press_y) && !active) switch_flavor(f);
@@ -174,7 +174,7 @@ static B32 app_frame(void)
         F32 bw = root_as_icon ? root_icon : Min(f_text_width(ui.font.caption, root_label) + 24 * s, max_w);
         Rect b = rect(hright - bw, (header_h - bh) * 0.5f, hright, (header_h + bh) * 0.5f);
         B32 hot = ui_mouse_in(b);
-        ui_caption_hole(b);
+        wm_caption_hole(b);
         ui_plate(b, hot ? C_BUTTON_HI : C_BUTTON, 6 * s);
         if (root_as_icon) { // a folder (Segoe Fluent Icons / MDL2) and the arrow
             F32 gx = b.x0 + 10 * s, mid = (b.y0 + b.y1) * 0.5f;
@@ -185,7 +185,7 @@ static B32 app_frame(void)
                         app.wow_root.size ? C_DIM : C_TEXT, bw - 24 * s);
         }
         app.root_btn = b;
-        if (hot && in->released && point_in(b, in->press_x, in->press_y)) ui_defer(show_root_menu);
+        if (hot && in->released && point_in(b, in->press_x, in->press_y)) wm_defer(show_root_menu);
     }
 
     ui_divider(0, W, header_h);
@@ -329,11 +329,11 @@ static B32 app_frame(void)
 
     //- Status bar
     F32 sy = H - status_h + (status_h - ui.font.caption->line_height) * 0.5f;
-    EnterCriticalSection(&status_lock);
+    os_mutex_lock(&status_lock);
     String8 status = str8_copy(fa, str8_cstring(status_text));
     String8 url = str8_copy(fa, str8_cstring(status_url));
     B32 is_error = status_is_error;
-    LeaveCriticalSection(&status_lock);
+    os_mutex_unlock(&status_lock);
     if (!status.size && snap) {
         status = str8_pushf(fa, "%llu tracked  \xC2\xB7  %llu folders scanned in %.0f ms  \xC2\xB7  %.*s",
                             snap->tracked, snap->folders, snap->scan_ms, S8F(snap->addons_dir));
@@ -371,7 +371,7 @@ static B32 app_frame(void)
         ui_plate(b, hot ? C_ACCENT : C_ACCENT_BG, 5 * s);
         ui_text_centered(ui.font.caption, b, label, C_TEXT);
         if (hot && in->released && point_in(b, in->press_x, in->press_y)) {
-            ui_open_url(url);
+            os_open_url(url);
         }
         right = b.x0 - 12 * s;
     }

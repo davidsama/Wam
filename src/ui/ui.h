@@ -1,17 +1,17 @@
-// ui.h - a small immediate-mode UI library on top of render/ (rounded rects, glyphs) and font/.
+// ui.h - a small immediate-mode UI library on top of render/ (rounded rects, glyphs), font/ and
+// the window layer wm/. No platform code: the window, its input and the native pieces are wm's,
+// files, threads and the clipboard os's.
 //
 // Nothing here knows about the app using it. Each frame the app calls widgets; a widget draws
 // itself with ui.theme / ui.font and returns what the user did with it (clicked, toggled...).
-// Mouse state lives in ui.in and keys and typed text in ui.events, both filled by the window layer;
+// The window's mouse state is in ui.in and its keys and typed text in ui.events, for this frame;
 // the frame arena is cleared every frame.
 //
-//   ui.c        state, geometry, theme, fonts, ornaments, widgets, text editing
+//   ui.c        state, geometry, theme, fonts, frames, ornaments, widgets, text editing
 //   ui_image.c  pictures from URLs (icons, thumbnails), fetched and decoded in the background
-//   ui_win32.c  the window: creation, DPI, input, frame scheduling, deferred work, and Windows
-//               services widgets can't do mid-frame (shell open, clipboard, folder picker, menus)
 //
-// Everything is `static` (unity build): include ui.h after render/ and font/, then ui.c,
-// ui_image.c and ui_win32.c.
+// Everything is `static` (unity build): include ui.h after render/, font/ and wm/wm.h, then ui.c
+// and ui_image.c.
 
 #ifndef UI_H
 #define UI_H
@@ -36,48 +36,13 @@ typedef struct UI_Theme {
 // buttons, glyphs_big (14px) for icons in rows.
 typedef struct UI_Fonts { F_Font *normal, *bold, *caption, *title, *icon, *glyphs, *glyphs_big; } UI_Fonts;
 
-typedef struct UI_Input {
-    F32 mx, my;              // mouse, client pixels
-    F32 press_x, press_y;    // where the last button press happened
-    B32 inside, tracking;    // mouse over the window (tracking: WM_MOUSELEAVE requested)
-    B32 down;                // left button held
-    B32 pressed, released;   // left button went down / up this frame
-    F32 wheel;               // wheel notches this frame (positive = away from the user)
-} UI_Input;
-
-// Keys and typed text since the last frame, in the order they came (ui.events). A key press and the
-// text it types are two events: Space is a UI_KEY_SPACE press and a ' ' of text. Text events are
-// printable characters only; Enter, Backspace, Esc and Ctrl+letter come as key presses.
-typedef enum UI_Key {
-    UI_KEY_NONE = 0,
-    // '0'..'9' and 'A'..'Z' are themselves.
-    UI_KEY_BACKSPACE = 0x100, UI_KEY_TAB, UI_KEY_RETURN, UI_KEY_ESCAPE, UI_KEY_SPACE, UI_KEY_DELETE,
-    UI_KEY_LEFT, UI_KEY_RIGHT, UI_KEY_UP, UI_KEY_DOWN, UI_KEY_PAGE_UP, UI_KEY_PAGE_DOWN, UI_KEY_HOME, UI_KEY_END,
-    UI_KEY_COMMA,
-    UI_KEY_F1, UI_KEY_F2, UI_KEY_F3, UI_KEY_F4, UI_KEY_F5, UI_KEY_F6,
-    UI_KEY_F7, UI_KEY_F8, UI_KEY_F9, UI_KEY_F10, UI_KEY_F11, UI_KEY_F12,
-} UI_Key;
-
-enum { UI_MOD_CTRL = 1, UI_MOD_SHIFT = 2, UI_MOD_ALT = 4 };
-
-typedef enum UI_EventKind { UI_EVENT_KEY, UI_EVENT_TEXT } UI_EventKind;
-
-typedef struct UI_Event {
-    UI_EventKind kind;
-    UI_Key key;              // UI_EVENT_KEY: what was pressed (also each auto-repeat)
-    U32 mods;                // UI_MOD_*: held at the time
-    U32 codepoint;           // UI_EVENT_TEXT: what was typed
-} UI_Event;
-
-#define UI_EVENT_MAX 64
-
 typedef struct UI_State {
     F32 scale;               // DPI scale: 1.0 at 96 dpi
     UI_Theme theme;
     UI_Fonts font;
     Arena *font_arena;
-    UI_Input in;
-    UI_Event events[UI_EVENT_MAX]; // this frame's keys and text (more than that between two frames are dropped)
+    WM_Input in;             // the mouse, this frame
+    WM_Event *events;        // keys and typed text since the last frame, in order
     U32 event_count;
     Arena *frame_arena;     // scratch for this frame, cleared before each one
     F32 width, height;       // client size in pixels
@@ -95,7 +60,7 @@ typedef struct UI_State {
 
 static UI_State ui;
 
-enum { UI_CURSOR_ARROW, UI_CURSOR_SIZE_WE, UI_CURSOR_HAND };
+enum { UI_CURSOR_ARROW = WM_CURSOR_ARROW, UI_CURSOR_SIZE_WE = WM_CURSOR_SIZE_WE, UI_CURSOR_HAND = WM_CURSOR_HAND };
 
 //- Geometry, color, hit testing
 
@@ -110,6 +75,21 @@ static B32  ui_clicked(Rect r);                // pressed and released inside r,
 static UI_Theme ui_theme_dark(void);         // flat, neutral dark gray-blue (ornate 0)
 static UI_Theme ui_theme_tinker(void);       // midnight blue with gold and bronze trim, bevels and gems (ornate 1)
 static void ui_fonts_load(void);               // (re)builds ui.font for ui.scale (Segoe UI)
+
+//- Frames
+//
+// After wm_window_open, ui_init sets up the renderer and fonts for the window. Then each WM_App.frame
+// is ui_frame(f, build): it takes the frame's size, scale and input, calls build (which calls the
+// widgets; it returns 1 to animate) and presents what it drew.
+
+static B32 ui_init(void);                              // 0 if Direct3D 11 isn't available
+static B32 ui_frame(WM_Frame *f, B32 (*build)(void));  // returns 1 for another frame (animation)
+// Minimize, maximize and close in the top-right corner, h tall, ending at `right`; returns their
+// left edge. For the app's own title bar (wm_caption).
+static F32 ui_window_buttons(F32 right, F32 h);
+// Testing: when ui_frame_log is set, each frame appends its timings there; when ui_shot_dir is
+// set, F12 saves the next frame there as shot-N.bmp (and doesn't reach the app).
+static String8 ui_frame_log, ui_shot_dir;
 
 //- Ornaments
 //
@@ -150,7 +130,7 @@ static B32  ui_loading_bar(Rect r);
 // Word-wrapped paragraphs ('\n' ends a line; "• " lines hang-indent). Draws only the lines inside
 // [vis_y0, vis_y1); returns the total height.
 static F32  ui_text_wrapped(F_Font *f, F32 x, F32 y, F32 w, String8 text, V4 color, F32 vis_y0, F32 vis_y1);
-// Pictures from URLs: see ui_image.c (ui_image(), ui_image_fetch). Include it before ui_win32.c.
+// Pictures from URLs: see ui_image.c (ui_image(), ui_image_fetch).
 
 // A handle to drag (e.g. a divider between panes): true while it's being dragged, with the mouse at
 // ui.in.mx / my. Shows the left-right resize pointer while hovered or dragged. *dragging is its state.
@@ -186,66 +166,8 @@ static void ui_text_clear(UI_TextBuf *t);         // also wipes the bytes (it ma
 static void ui_text_paste(UI_TextBuf *t, String8 utf8);
 // Edits t with one event: typed text, Backspace, Ctrl+Backspace (clears), Ctrl+V (pastes).
 // Returns 1 if it used the event; Enter, Escape and the other keys are left to the caller.
-static B32  ui_text_edit(UI_TextBuf *t, UI_Event *e);
+static B32  ui_text_edit(UI_TextBuf *t, WM_Event *e);
 // A one-line field: text (or one dot per character when masked) with a caret, or the hint when empty.
 static void ui_text_field(Rect r, UI_TextBuf *t, String8 hint, B32 masked, V4 border);
-
-//- Window (ui_win32.c)
-
-typedef struct UI_App {
-    wchar_t *class_name, *title;
-    int width, height;              // initial size, at 96 dpi
-    int icon;                       // resource id of the window's icon (0: Windows' default)
-    int min_width, min_height;      // at 96 dpi
-    B32 accept_files;               // drag and drop from Explorer
-    // Draws one frame between the renderer's begin/end. Return 1 to get another frame (animation).
-    B32 (*frame)(void);
-    // Everything the window layer doesn't handle itself: timers, WM_APP messages. (Keys and typed
-    // text don't come here: they're in ui.events, for the next frame.)
-    // Set *handled to stop the default processing.
-    LRESULT (*message)(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, B32 *handled);
-    void (*file_dropped)(String8 path);   // each dropped file
-    void (*activated)(void);              // the window became the active one
-    // Where the window opens (screen pixels; w = 0: Windows picks, at width x height). Ignored if
-    // it's not on any monitor now. After the window closes, ui_window_place has where it was.
-    S32 x, y, w, h;
-    B32 maximized;
-} UI_App;
-
-static HWND ui_hwnd;
-static B32  ui_window_open(HINSTANCE inst, UI_App *desc);   // creates the window, renderer and fonts
-static int  ui_window_run(int show);                          // shows it and runs the message loop
-// The window's last restored (not maximized/minimized) rectangle in screen pixels, and whether it
-// was maximized. Kept up to date while it's open, still valid once it has closed.
-typedef struct UI_WindowPlace { S32 x, y, w, h; B32 maximized; } UI_WindowPlace;
-static UI_WindowPlace ui_window_place;
-static void ui_request_frame(void);
-
-// The window has no Windows title bar: the app draws its own across the top. Each frame it says how
-// tall that bar is (ui_caption) and where in it the mouse belongs to its widgets (ui_caption_hole);
-// the rest of the bar drags the window, double-click maximizes, right-click opens the window menu.
-// ui_window_buttons draws minimize, maximize and close in the top-right corner, h tall, ending at
-// `right`, and returns their left edge. Windows 11's snap layouts appear over maximize as usual.
-static void ui_caption(F32 h);                 // 0: no caption this frame (e.g. something covers it)
-static void ui_caption_hole(Rect r);
-static F32  ui_window_buttons(F32 right, F32 h);
-// Runs fn after the current frame. For anything that pumps messages (menus, dialogs): called
-// inside a frame it would re-run that frame with the same click still pending.
-static void ui_defer(void (*fn)(void));
-
-// Opens a file, URL or program on a short-lived thread (ShellExecute pumps messages too).
-static void ui_shell_open_async(String8 file, String8 args);
-static void ui_open_url(String8 url);              // https:// only
-static String8 ui_open_log;                        // testing: when set, opens are appended here instead
-
-static String8 ui_clipboard_text(Arena *a);
-// Native popup menu below `anchor`; an item "-" is a separator. Returns the chosen index or -1.
-static S32 ui_popup_menu(Rect anchor, String8 *items, U32 count, S32 checked);
-// The same with submenus: an item whose index other items name as parent opens a submenu of them
-// (it can't be picked itself). parent -1 = the top menu; "-" = a separator. Returns the picked index.
-typedef struct UI_MenuItem { String8 label; S32 parent; B32 checked; } UI_MenuItem;
-static S32 ui_popup_menu_tree(Rect anchor, UI_MenuItem *items, U32 count);
-// Windows' folder picker. Empty if cancelled.
-static String8 ui_pick_folder(Arena *a, wchar_t *title);
 
 #endif
