@@ -2,8 +2,8 @@
 //
 // Everything on screen is a rect instance: dst rect, atlas uv rect, two colors, params (corner
 // radius, border thickness, edge softness, texture) and a shape. The pixel shader evaluates the
-// shape's signed distance (a rounded rect, a cog wheel or a diamond), so rounded corners, borders
-// and soft shadows are all free, and blends the two colors along the rect (a gradient). Rects are
+// shape's signed distance (a rounded rect, a cog wheel, a diamond, a star, a crescent, a leaf or a
+// tapered stroke), so rounded corners, borders and soft shadows are all free, and blends the two colors along the rect (a gradient). Rects are
 // grouped into batches that share a clip rect. One instance buffer, one draw call per batch.
 //
 // Three textures: the glyph atlas (8-bit coverage, point-sampled), the image
@@ -19,9 +19,13 @@ typedef struct R_Rect {
     F32 color2[4]; // the gradient's end color (= color for a solid fill)
     F32 shape[4];  // R_SHAPE_*, then: rect: 1 = the gradient runs left to right (else top to bottom);
                    // cog: teeth, root radius / outer radius, rotation (radians)
+                   // star: points, sharpness (2 = spiky .. points = a polygon), rotation
+                   // crescent: cut radius / radius, cut offset / radius, rotation (0: opens to the right)
+                   // leaf: half width, half height, rotation (0: upright)
+                   // taper: radius at a, radius at b (a, b in src, relative to dst's center)
 } R_Rect;
 
-enum { R_SHAPE_RECT, R_SHAPE_COG, R_SHAPE_DIAMOND };
+enum { R_SHAPE_RECT, R_SHAPE_COG, R_SHAPE_DIAMOND, R_SHAPE_STAR, R_SHAPE_CRESCENT, R_SHAPE_LEAF, R_SHAPE_TAPER };
 
 typedef struct R_Batch { U32 first, count; Rect clip; } R_Batch;
 
@@ -65,7 +69,7 @@ static char r_shader_src[] =
 "struct VSIn { float4 dst : DST; float4 src : SRC; float4 col : COL; float4 params : PARAMS; float4 col2 : COLB; float4 shape : SHAPE;\n"
 "              uint vid : SV_VertexID; };\n"
 "struct PSIn { float4 pos : SV_Position; float2 uv : UV; float2 local : LOCAL; float2 half_size : HSIZE;\n"
-"              float4 col : COL; float4 params : PARAMS; float4 col2 : COLB; float4 shape : SHAPE; };\n"
+"              float4 col : COL; float4 params : PARAMS; float4 col2 : COLB; float4 shape : SHAPE; float4 src : SRCC; };\n"
 "PSIn vs_main(VSIn i) {\n"
 "  float2 corner = float2((i.vid & 1) ? 1.0 : 0.0, (i.vid & 2) ? 1.0 : 0.0);\n"
 "  float2 p = lerp(i.dst.xy, i.dst.zw, corner);\n"
@@ -74,7 +78,7 @@ static char r_shader_src[] =
 "  o.uv = lerp(i.src.xy, i.src.zw, corner);\n"
 "  o.half_size = (i.dst.zw - i.dst.xy) * 0.5;\n"
 "  o.local = (corner * 2 - 1) * o.half_size;\n"
-"  o.col = i.col; o.params = i.params; o.col2 = i.col2; o.shape = i.shape;\n"
+"  o.col = i.col; o.params = i.params; o.col2 = i.col2; o.shape = i.shape; o.src = i.src;\n"
 "  return o;\n"
 "}\n"
 "Texture2D atlas : register(t0); SamplerState samp : register(s0);\n"
@@ -89,6 +93,36 @@ static char r_shader_src[] =
 "  float hw = lerp(seg * 0.30, seg * 0.17, saturate((r - ri) / max(ro - ri, 0.001)));\n"
 "  return min(r - ri, max(r - ro, (f - hw) * r));\n"
 "}\n"
+"float2 rot(float2 p, float a) { float c = cos(a), s = sin(a); return float2(c * p.x + s * p.y, -s * p.x + c * p.y); }\n"
+// A star of n points (after Inigo Quilez): m from 2 (spiky) to n (a regular polygon). A point is up.
+"float star(float2 p, float r, float n, float m) {\n"
+"  float an = 3.141593 / n, en = 3.141593 / m;\n"
+"  float2 acs = float2(cos(an), sin(an)), ecs = float2(cos(en), sin(en));\n"
+"  float a = atan2(p.x, -p.y), w = 2 * an, bn = a - w * floor(a / w) - an;\n"
+"  p = length(p) * float2(cos(bn), abs(sin(bn)));\n"
+"  p -= r * acs;\n"
+"  p += ecs * clamp(-dot(p, ecs), 0.0, r * acs.y / ecs.y);\n"
+"  return length(p) * sign(p.x);\n"
+"}\n"
+// Two arcs meeting in points at the top and bottom (a vesica): w half wide, h half tall (w < h).
+"float leaf(float2 p, float w, float h) {\n"
+"  p = abs(p);\n"
+"  float d = (h * h / w - w) * 0.5, r = w + d;\n"
+"  return ((p.y - h) * d > p.x * h) ? length(p - float2(0, h)) : length(p + float2(d, 0)) - r;\n"
+"}\n"
+// A stroke from a (radius ra) to b (radius rb): Inigo Quilez's uneven capsule.
+"float taper(float2 p, float2 pa, float2 pb, float ra, float rb) {\n"
+"  p -= pa; pb -= pa;\n"
+"  float h = max(dot(pb, pb), 0.0001);\n"
+"  float2 q = float2(dot(p, float2(pb.y, -pb.x)), dot(p, pb)) / h;\n"
+"  q.x = abs(q.x);\n"
+"  float b = ra - rb;\n"
+"  float2 c = float2(sqrt(max(h - b * b, 0.0001)), b);\n"
+"  float k = c.x * q.y - c.y * q.x, m = dot(c, q), n = dot(q, q);\n"
+"  if (k < 0.0) return sqrt(h * n) - ra;\n"
+"  if (k > c.x) return sqrt(h * (n + 1.0 - 2.0 * q.y)) - rb;\n"
+"  return m - ra;\n"
+"}\n"
 "float4 ps_main(PSIn i) : SV_Target {\n"
 "  float radius = i.params.x, border = i.params.y, soft = i.params.z, kind = i.shape.x;\n"
 "  float g = (kind < 0.5 && i.shape.y > 0.5) ? i.local.x / max(i.half_size.x, 0.001) : i.local.y / max(i.half_size.y, 0.001);\n"
@@ -98,7 +132,12 @@ static char r_shader_src[] =
 "  else if (i.params.w > 0.5) c.a *= atlas.Sample(samp, i.uv).r;\n"
 "  if (soft > 0) {\n"
 "    float d;\n"
-"    if (kind > 1.5) d = diamond(i.local, i.half_size);\n"
+"    float rr = min(i.half_size.x, i.half_size.y);\n"
+"    if (kind > 5.5) d = taper(i.local, i.src.xy, i.src.zw, i.shape.y, i.shape.z);\n"
+"    else if (kind > 4.5) d = leaf(rot(i.local, i.shape.w), i.shape.y, i.shape.z);\n"
+"    else if (kind > 3.5) d = max(length(i.local) - rr, i.shape.y * rr - length(i.local - float2(cos(i.shape.w), sin(i.shape.w)) * i.shape.z * rr));\n"
+"    else if (kind > 2.5) d = star(rot(i.local, i.shape.w), rr, i.shape.y, i.shape.z);\n"
+"    else if (kind > 1.5) d = diamond(i.local, i.half_size);\n"
 "    else if (kind > 0.5) d = max(cog(i.local, min(i.half_size.x, i.half_size.y), i.shape.y, i.shape.z, i.shape.w), radius - length(i.local));\n"
 "    else d = rrect(i.local, i.half_size, radius);\n"
 "    c.a *= 1 - smoothstep(-soft, soft, d);\n"
@@ -362,6 +401,67 @@ static void r_cog(Rect dst, V4 top, V4 bottom, F32 teeth, F32 inner_ratio, F32 a
     r_set_colors(r, top, bottom);
     r->params[0] = hole_radius; r->params[1] = border; r->params[2] = 0.5f;
     r->shape[0] = R_SHAPE_COG; r->shape[1] = teeth; r->shape[2] = inner_ratio; r->shape[3] = angle;
+}
+
+// A star of `points` points in the circle inscribed in dst, one pointing up when angle is 0 (radians,
+// clockwise), colored top to bottom. sharpness: 2 is spiky, up to `points` (a regular polygon).
+static void r_star(Rect dst, V4 top, V4 bottom, F32 points, F32 sharpness, F32 angle, F32 border)
+{
+    R_Rect *r = r_push();
+    r->dst[0] = dst.x0; r->dst[1] = dst.y0; r->dst[2] = dst.x1; r->dst[3] = dst.y1;
+    r_set_colors(r, top, bottom);
+    r->params[1] = border; r->params[2] = 0.5f;
+    r->shape[0] = R_SHAPE_STAR; r->shape[1] = points; r->shape[2] = sharpness; r->shape[3] = angle;
+}
+
+// A crescent: the circle inscribed in dst less a circle cut * its radius, offset * its radius away
+// in the direction angle (0: right, clockwise). Colored top to bottom.
+static void r_crescent(Rect dst, V4 top, V4 bottom, F32 cut, F32 offset, F32 angle, F32 border)
+{
+    R_Rect *r = r_push();
+    r->dst[0] = dst.x0; r->dst[1] = dst.y0; r->dst[2] = dst.x1; r->dst[3] = dst.y1;
+    r_set_colors(r, top, bottom);
+    r->params[1] = border; r->params[2] = 0.5f;
+    r->shape[0] = R_SHAPE_CRESCENT; r->shape[1] = cut; r->shape[2] = offset; r->shape[3] = angle;
+}
+
+// A leaf (two arcs meeting in points) centered on (cx, cy), hw half wide and hh half tall when
+// upright, turned by angle (clockwise). Colored top to bottom.
+static void r_leaf(F32 cx, F32 cy, F32 hw, F32 hh, F32 angle, V4 top, V4 bottom, F32 border)
+{
+    R_Rect *r = r_push();
+    F32 e = Max(hw, hh) + 1;
+    r->dst[0] = cx - e; r->dst[1] = cy - e; r->dst[2] = cx + e; r->dst[3] = cy + e;
+    r_set_colors(r, top, bottom);
+    r->params[1] = border; r->params[2] = 0.5f;
+    r->shape[0] = R_SHAPE_LEAF; r->shape[1] = Min(hw, hh * 0.98f); r->shape[2] = hh; r->shape[3] = angle;
+}
+
+// A stroke from (ax, ay), ra thick (radius), to (bx, by), rb thick: a spike, a blade, a flame's
+// tongue. Colored top to bottom.
+static void r_taper(F32 ax, F32 ay, F32 bx, F32 by, F32 ra, F32 rb, V4 top, V4 bottom)
+{
+    R_Rect *r = r_push();
+    F32 x0 = Min(ax - ra, bx - rb) - 1, y0 = Min(ay - ra, by - rb) - 1;
+    F32 x1 = Max(ax + ra, bx + rb) + 1, y1 = Max(ay + ra, by + rb) + 1;
+    F32 mx = (x0 + x1) * 0.5f, my = (y0 + y1) * 0.5f;
+    r->dst[0] = x0; r->dst[1] = y0; r->dst[2] = x1; r->dst[3] = y1;
+    r->src[0] = ax - mx; r->src[1] = ay - my; r->src[2] = bx - mx; r->src[3] = by - my;
+    r_set_colors(r, top, bottom);
+    r->params[2] = 0.5f;
+    r->shape[0] = R_SHAPE_TAPER; r->shape[1] = ra; r->shape[2] = rb;
+}
+
+// A soft disc of light centered on (cx, cy): solid out to r - soft, gone at r + soft.
+static void r_glow(F32 cx, F32 cy, F32 r, F32 soft, V4 color)
+{
+    R_Rect *q = r_push();
+    F32 e = r + soft + 1;
+    q->dst[0] = cx - e; q->dst[1] = cy - e; q->dst[2] = cx + e; q->dst[3] = cy + e;
+    q->src[1] = -0.01f; q->src[3] = 0.01f; // (a dot of a stroke)
+    r_set_colors(q, color, color);
+    q->params[2] = Max(soft, 0.5f);
+    q->shape[0] = R_SHAPE_TAPER; q->shape[1] = r; q->shape[2] = r;
 }
 
 // A diamond touching the middle of dst's edges, colored top to bottom; border > 0: only its outline.

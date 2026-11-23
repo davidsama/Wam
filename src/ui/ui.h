@@ -29,7 +29,26 @@ typedef struct UI_Theme {
     // (plain fills, plain borders, no rivets or gems), 1 draws bevels, gradients and trim in full.
     V4 trim_hi, trim, trim_dark, gem;
     F32 ornate;
+    // What the ornaments are made of (UI_STYLE_*): the emblem in a divider, the pieces on a panel's
+    // corners, the spinner. `spark` is a second color they set against the gem's (embers in a
+    // flame, frost on an ice crystal...), `aura` a glow over the top of the window and of panels
+    // (alpha 0: none).
+    int style;
+    V4 spark, aura;
 } UI_Theme;
+
+enum {
+    UI_STYLE_GEARWORK, // cogs, rivets and cut diamonds
+    UI_STYLE_VOID,     // dark orbs in crescents, little stars
+    UI_STYLE_FROST,    // ice crystals and shards
+    UI_STYLE_FLAME,    // flames and embers
+    UI_STYLE_FEL,      // horned orbs and sigils
+    UI_STYLE_BLOOD,    // crossed blades, spikes and studded bosses
+    UI_STYLE_HOLY,     // sunbursts and sparkles
+    UI_STYLE_NATURE,   // leaves and berries
+    UI_STYLE_STORM,    // lightning bolts and orbs in copper rings
+    UI_STYLE_COUNT
+};
 
 // caption: the 12px font for secondary text ("small" would collide with a macro in rpcndr.h).
 // glyphs: Windows' own icon font (Segoe Fluent Icons, else Segoe MDL2 Assets): 10px for the window
@@ -169,14 +188,24 @@ static void ui_plate(Rect r, V4 bg, F32 radius);
 // and corner studs over the content's edges (after it).
 static void ui_panel(Rect r, F32 radius);
 static void ui_panel_rim(Rect r, F32 radius);
-// A horizontal rule from x0 to x1 centered on y: metal that fades out at both ends, with a gem in
-// the middle when ornate (a plain line otherwise).
+// A horizontal rule from x0 to x1 centered on y: metal that fades out at both ends, with the
+// theme's emblem in the middle and its motifs beside it when ornate (a plain line otherwise).
 static void ui_divider(F32 x0, F32 x1, F32 y);
+// The theme's emblem (its style's centerpiece: a cut diamond, a frost crystal, a flame...) in
+// theme t's colors, centered on (cx, cy), about `size` across. For a theme other than ui.theme
+// too, e.g. to show it in a picker.
+static void ui_emblem(UI_Theme *t, F32 cx, F32 cy, F32 size);
+// The theme's piece for a corner of a panel, centered on (cx, cy), about `size` across. (dx, dy)
+// (each -1 or 1) points out of the panel through that corner.
+static void ui_corner(UI_Theme *t, F32 cx, F32 cy, F32 size, F32 dx, F32 dy);
+// A soft glow of the theme's aura over the top of r (radius: r's corners; nothing when it has none).
+static void ui_aura(Rect r, F32 radius, F32 strength);
 // A cut gem (a diamond with a lit facet) centered on (cx, cy), `size` tall.
 static void ui_gem(F32 cx, F32 cy, F32 size, V4 color);
 // A cog wheel centered on (cx, cy), r its outer radius, turned by angle (radians).
 static void ui_cog(F32 cx, F32 cy, F32 r, F32 angle, V4 color);
-// A turning cog, for "working on it". Returns 1 (keeps frames coming).
+// "Working on it", in the theme's style (a turning cog, a flickering flame...), r its radius.
+// Returns 1 (keeps frames coming).
 static B32  ui_spinner(F32 cx, F32 cy, F32 r);
 // A rivet: a small domed bolt head.
 static void ui_rivet(F32 cx, F32 cy, F32 r);

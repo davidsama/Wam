@@ -1,6 +1,6 @@
 // gui/settings.c - the settings popup: a panel in the middle of the window over a dimmed backdrop,
 // opened with the cog in the header (or Ctrl+,). It has what can be set (the Wago key, the WoW
-// folder), what's in use (the CurseForge key), and the folders wam keeps things in.
+// folder, the theme), what's in use (the CurseForge key), and the folders wam keeps things in.
 // Esc, the close button or a click beside it closes it. Part of main_gui.c's unity build.
 
 static void browse_for_root(void); // frame.c
@@ -79,6 +79,56 @@ static B32 settings_folder_button(F32 *x, F32 y, char *label, String8 path)
     return 1;
 }
 
+// One theme in the picker, drawn in its own colors: its panel and glow, its emblem, its name in its
+// heading color and a strip from its accent to its spark. True when clicked.
+static B32 settings_theme_card(Rect r, ThemeInfo *info, B32 chosen)
+{
+    F32 s = ui.scale, px = ui_px(), radius = 7 * s;
+    UI_Theme t = info->make();
+    UI_Id id = ui_id(str8_cstring(info->key));
+    UI_Signal sg = ui_signal(id, r, UI_FOCUSABLE);
+    B32 in_clip = ui_mouse_in(ui.clip);
+    F32 hot = ui_anim(id, (F32)(sg.hovering && in_clip));
+
+    r_rect_gradient(r, ui_mix(t.panel, t.hover, 0.6f + 0.4f * hot), t.bg, radius, 0, 0.5f, 0);
+    if (t.ornate > 0 && t.aura.w > 0) {
+        V4 none = t.aura;
+        none.w = 0;
+        r_rect_gradient(r, ui_fade(t.aura, 2.5f), none, radius, 0, 0.5f, 0);
+    }
+    Rect strip = rect(r.x0 + 1 * s, r.y1 - 5 * s, r.x1 - 1 * s, r.y1 - 1 * s);
+    r_rect_gradient(strip, t.accent, t.ornate > 0 ? t.spark : t.accent_hi, 2 * s, 0, 0.5f, 1);
+    V4 rim = chosen ? ui.theme.accent_hi : ui_mix(t.ornate > 0 ? t.trim : t.border_hi, t.trim_hi, hot);
+    r_rect(r, rim, radius, chosen ? 2 * s : px, 0.5f);
+
+    F32 cy = r.y0 + (r.y1 - r.y0 - 5 * s) * 0.5f;
+    ui_emblem(&t, r.x0 + 16 * s, cy, 20 * s);
+    String8 name = str8_cstring(info->name);
+    f_draw_text(ui.font.caption, r.x0 + 31 * s, cy - ui.font.caption->line_height * 0.5f, name, chosen ? t.heading : ui_mix(t.dim, t.heading, hot), r.x1 - r.x0 - 34 * s);
+
+    if (sg.hovering && in_clip) ui_tooltip(r, str8_cstring(info->about));
+    ui_focus_ring(id, r, radius);
+    return sg.clicked && (sg.keyboard || in_clip);
+}
+
+// The theme picker: a grid of cards. Picking one applies it at once and saves it. Returns the y below it.
+static F32 settings_themes(F32 x, F32 y, F32 w)
+{
+    F32 s = ui.scale, gap = 8 * s, ch = 44 * s;
+    int cols = 5;
+    F32 cw = (w - gap * (cols - 1)) / cols;
+    for (int i = 0; i < THEME_COUNT; i += 1) {
+        F32 cx = x + (i % cols) * (cw + gap), cy = y + (i / cols) * (ch + gap);
+        Rect r = rect((F32)(int)cx, (F32)(int)cy, (F32)(int)(cx + cw), (F32)(int)(cy + ch));
+        if (settings_theme_card(r, &themes[i], i == theme_current) && i != theme_current) {
+            theme_apply(i);
+            wam_save_theme(str8_cstring(themes[i].key));
+        }
+    }
+    int rows = (THEME_COUNT + cols - 1) / cols;
+    return y + rows * ch + (rows - 1) * gap;
+}
+
 static void draw_settings(void)
 {
     F32 s = ui.scale;
@@ -137,6 +187,10 @@ static void draw_settings(void)
         if (ui_button(rect(x + w - bw, y, x + w, y + 28 * s), change, C_TEXT, C_BUTTON, C_BUTTON_HI)) wm_defer(browse_for_root);
         y += 28 * s + 22 * s;
     }
+
+    //- Appearance
+    y = settings_heading(x, y, w, "Appearance", 0);
+    y = settings_themes(x, y, w) + 22 * s;
 
     //- Folders
     y = settings_heading(x, y, w, "Folders", "Where wam keeps its settings, its caches, and the backups of your addon settings.");

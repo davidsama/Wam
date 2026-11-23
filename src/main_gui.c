@@ -77,6 +77,7 @@
 #include "gui/tasks.c"
 #include "gui/feedback.c"   // what the user asked for shows at once
 #include "gui/views.c"
+#include "gui/themes.c"     // the looks to pick from
 #include "gui/settings.c"   // the settings popup
 #include "gui/changes.c"    // the changes popup (what an update would bring)
 #include "gui/frame.c"
@@ -433,7 +434,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         MessageBoxW(0, L"Could not initialize Direct3D 11.", L"WoW Addon Manager", MB_OK | MB_ICONERROR);
         return 1;
     }
-    ui.theme = ui_theme_tinker();
+    {
+        Temp t = temp_begin(app.arena);
+        theme_apply(theme_index(wam_settings_load(t.arena).theme)); // the look chosen last time
+        temp_end(t);
+    }
     web_ok = wm_web_available() && !os_get_env(app.arena, "WAM_TEST_NO_WEBVIEW").size; // testing: force the browser path
 
     task_sem = os_semaphore_alloc(TASK_QUEUE);

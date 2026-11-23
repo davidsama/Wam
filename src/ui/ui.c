@@ -241,6 +241,9 @@ static UI_Theme ui_theme_dark(void)
     t.trim_dark = t.bg;
     t.gem       = t.accent;
     t.ornate    = 0;
+    t.style     = UI_STYLE_GEARWORK;
+    t.spark     = t.accent;
+    t.aura      = ui_hex(0x000000, 0);
     return t;
 }
 
@@ -273,6 +276,9 @@ static UI_Theme ui_theme_tinker(void)
     t.trim_dark = ui_hex(0x3c2810, 1);
     t.gem       = ui_hex(0x4fb3ff, 1);
     t.ornate    = 1;
+    t.style     = UI_STYLE_GEARWORK;
+    t.spark     = ui_hex(0xf3d283, 1);
+    t.aura      = ui_hex(0x2b4a8c, 0.10f);
     return t;
 }
 
@@ -312,6 +318,13 @@ static void ui_plate(Rect r, V4 bg, F32 radius)
     r_rect_gradient(in, ui_hex(0xffffff, 0.16f * o), ui_hex(0xffffff, 0), Max(radius - px, 0), px, 0.5f, 0);
 }
 
+// Color helpers for the ornaments: toward white, toward black, more transparent.
+static V4 ui_lit(V4 c, F32 t)  { return ui_mix(c, ui_hex(0xffffff, c.w), t); }
+static V4 ui_dark(V4 c, F32 t) { return ui_mix(c, ui_hex(0x000000, c.w), t); }
+static V4 ui_fade(V4 c, F32 a) { c.w *= a; return c; }
+static Rect ui_square(F32 cx, F32 cy, F32 h) { return rect(cx - h, cy - h, cx + h, cy + h); }
+static void ui_disc(F32 cx, F32 cy, F32 r, V4 top, V4 bottom) { r_rect_gradient(ui_square(cx, cy, r), top, bottom, r, 0, 0.5f, 0); }
+
 static void ui_panel(Rect r, F32 radius)
 {
     UI_Theme *t = &ui.theme;
@@ -319,6 +332,7 @@ static void ui_panel(Rect r, F32 radius)
     if (o <= 0) { r_rect(r, t->panel, radius, 0, 0.5f); return; }
     r_rect(rect(r.x0, r.y0 + 3 * s, r.x1, r.y1 + 3 * s), ui_hex(0x000000, 0.45f * o), radius + 2 * s, 0, 6 * s); // shadow
     r_rect_gradient(r, ui_mix(t->panel, t->hover, 0.5f * o), t->panel, radius, 0, 0.5f, 0);
+    ui_aura(r, radius, 0.6f);
 }
 
 static void ui_panel_rim(Rect r, F32 radius)
@@ -331,12 +345,200 @@ static void ui_panel_rim(Rect r, F32 radius)
     r_rect_gradient(r, ui_mix(t->border, t->trim_hi, 0.75f * o), ui_mix(t->border, t->trim, 0.75f * o), radius, rim, 0.5f, 0);
     Rect in = rect(r.x0 + rim, r.y0 + rim, r.x1 - rim, r.y1 - rim);
     r_rect(in, ui_mix(t->border, t->trim_dark, o), Max(radius - rim, 0), px, 0.5f);
-    // A stud on each corner.
-    F32 k = Max(radius * 0.3f, 2 * s), g = 10 * s;
-    ui_gem(r.x0 + k, r.y0 + k, g, t->trim_hi);
-    ui_gem(r.x1 - k, r.y0 + k, g, t->trim_hi);
-    ui_gem(r.x0 + k, r.y1 - k, g, t->trim_hi);
-    ui_gem(r.x1 - k, r.y1 - k, g, t->trim_hi);
+    // The style's piece on each corner.
+    F32 k = Max(radius * 0.3f, 2 * s), g = t->style == UI_STYLE_GEARWORK ? 10 * s : 16 * s;
+    ui_corner(t, r.x0 + k, r.y0 + k, g, -1, -1);
+    ui_corner(t, r.x1 - k, r.y0 + k, g, 1, -1);
+    ui_corner(t, r.x0 + k, r.y1 - k, g, -1, 1);
+    ui_corner(t, r.x1 - k, r.y1 - k, g, 1, 1);
+}
+
+static void ui_aura(Rect r, F32 radius, F32 strength)
+{
+    UI_Theme *t = &ui.theme;
+    if (t->ornate <= 0 || t->aura.w <= 0) return;
+    F32 h = Min((r.y1 - r.y0) * 0.45f, 320 * ui.scale);
+    V4 none = t->aura;
+    none.w = 0;
+    r_rect_gradient(rect(r.x0, r.y0, r.x1, r.y0 + h), ui_fade(t->aura, strength), none, radius, 0, 0.5f, 0);
+}
+
+// A flame standing on (cx, cy + h / 2), h about half its height. flick stretches it (0: at rest),
+// sway bends its tip sideways (-1..1).
+static void ui_flame(UI_Theme *t, F32 cx, F32 cy, F32 h, F32 flick, F32 sway)
+{
+    F32 tip = cy - (1.0f + flick) * h, base = cy + 0.42f * h;
+    r_glow(cx, cy + 0.1f * h, 0.45f * h, 0.6f * h, ui_fade(t->gem, 0.4f));
+    V4 outer_top = ui_dark(t->gem, 0.35f), outer_bottom = ui_dark(t->gem, 0.1f);
+    r_taper(cx - 0.26f * h, base, cx - (0.62f - sway * 0.2f) * h, cy - (0.32f + flick * 0.6f) * h, 0.26f * h, 0, outer_top, outer_bottom);
+    r_taper(cx + 0.26f * h, base, cx + (0.62f + sway * 0.2f) * h, cy - (0.28f - flick * 0.3f) * h, 0.26f * h, 0, outer_top, outer_bottom);
+    r_taper(cx, base, cx + sway * 0.25f * h, tip, 0.5f * h, 0, ui_dark(t->gem, 0.2f), ui_lit(t->gem, 0.15f));
+    r_taper(cx, base + 0.05f * h, cx + sway * 0.15f * h, cy - (0.3f + flick * 0.5f) * h, 0.3f * h, 0, t->spark, ui_lit(t->spark, 0.65f));
+}
+
+// A snowflake: six arms with two branches each, over a crystal of the spark's color, turned by angle.
+static void ui_snowflake(UI_Theme *t, F32 cx, F32 cy, F32 h, F32 angle)
+{
+    F32 px = ui_px(), w = Max(px * 0.6f, 0.085f * h);
+    r_glow(cx, cy, 0.45f * h, 0.5f * h, ui_fade(t->gem, 0.35f));
+    r_star(ui_square(cx, cy, 0.62f * h), ui_lit(t->spark, 0.25f), t->spark, 6, 2.6f, angle + 3.14159f / 6, 0);
+    V4 top = ui_lit(t->gem, 0.65f), bottom = ui_lit(t->gem, 0.15f);
+    for (int k = 0; k < 6; k += 1) {
+        F32 a = angle + k * 1.0471976f, ux = sinf(a), uy = -cosf(a);
+        r_taper(cx, cy, cx + ux * h, cy + uy * h, w, w * 0.4f, top, bottom);
+        F32 bx = cx + ux * 0.55f * h, by = cy + uy * 0.55f * h;
+        for (F32 sd = -1; sd <= 1; sd += 2) {
+            F32 b = a + sd * 0.8f;
+            r_taper(bx, by, bx + sinf(b) * 0.32f * h, by - cosf(b) * 0.32f * h, w * 0.85f, w * 0.35f, top, bottom);
+        }
+    }
+    r_star(ui_square(cx, cy, 0.24f * h), t->trim_hi, ui_lit(t->gem, 0.4f), 6, 6, angle + 3.14159f / 6, 0);
+}
+
+// A cut stone (a disc) with a light on its upper left.
+static void ui_orb(F32 cx, F32 cy, F32 r, V4 color)
+{
+    ui_disc(cx, cy, r, ui_lit(color, 0.3f), ui_dark(color, 0.45f));
+    F32 hr = r * 0.32f;
+    ui_disc(cx - r * 0.32f, cy - r * 0.36f, hr, ui_hex(0xffffff, 0.7f * color.w), ui_hex(0xffffff, 0.1f * color.w));
+}
+
+// A ring of metal in the trim's colors.
+static void ui_ring(UI_Theme *t, F32 cx, F32 cy, F32 r, F32 thick)
+{
+    r_rect_gradient(ui_square(cx, cy, r), t->trim_hi, t->trim, r, thick, 0.5f, 0);
+}
+
+static void ui_emblem(UI_Theme *t, F32 cx, F32 cy, F32 size)
+{
+    F32 h = size * 0.5f, s = ui.scale, px = ui_px();
+    if (t->ornate <= 0) { ui_gem(cx, cy, size, t->gem); return; }
+    switch (t->style) {
+    default:
+    case UI_STYLE_GEARWORK:
+        ui_gem(cx, cy, size, t->gem);
+        break;
+    case UI_STYLE_VOID:
+        r_glow(cx, cy, 0.6f * h, 0.5f * h, ui_fade(t->gem, 0.5f));
+        ui_disc(cx, cy, 0.6f * h, ui_dark(t->gem, 0.5f), ui_dark(t->gem, 0.85f)); // the orb, swallowing light
+        r_crescent(ui_square(cx, cy, h), t->trim_hi, t->trim, 0.84f, 0.3f, -0.8f, 0);
+        r_star(ui_square(cx - 0.1f * h, cy + 0.05f * h, 0.32f * h), ui_lit(t->spark, 0.4f), t->spark, 4, 2.2f, 0, 0);
+        r_star(ui_square(cx + 0.66f * h, cy - 0.66f * h, 0.2f * h), ui_lit(t->spark, 0.4f), t->spark, 4, 2.2f, 0, 0);
+        break;
+    case UI_STYLE_FROST:
+        ui_snowflake(t, cx, cy, h, 0);
+        break;
+    case UI_STYLE_FLAME:
+        ui_flame(t, cx, cy + 0.08f * h, 0.92f * h, 0, 0);
+        ui_disc(cx - 0.72f * h, cy - 0.5f * h, Max(px, 0.08f * h), t->spark, t->spark);
+        ui_disc(cx + 0.78f * h, cy - 0.72f * h, Max(px, 0.06f * h), t->spark, t->spark);
+        break;
+    case UI_STYLE_FEL: {
+        F32 oy = cy + 0.18f * h;
+        r_glow(cx, oy, 0.5f * h, 0.5f * h, ui_fade(t->gem, 0.5f));
+        for (F32 sd = -1; sd <= 1; sd += 2) { // horns: out, then up
+            r_taper(cx + sd * 0.3f * h, oy - 0.25f * h, cx + sd * 0.7f * h, cy - 0.45f * h, 0.17f * h, 0.11f * h, t->trim_hi, t->trim);
+            r_taper(cx + sd * 0.7f * h, cy - 0.45f * h, cx + sd * 0.6f * h, cy - 1.0f * h, 0.11f * h, 0, t->trim_hi, t->trim_hi);
+        }
+        ui_disc(cx, oy, 0.52f * h, ui_lit(t->gem, 0.25f), ui_dark(t->gem, 0.4f)); // the eye
+        r_rect(ui_square(cx, oy, 0.52f * h), t->spark, 0.52f * h, Max(px, 1.1f * s), 0.5f);
+        r_leaf(cx, oy, 0.1f * h, 0.34f * h, 0, ui_dark(t->gem, 0.85f), ui_dark(t->gem, 0.9f), 0); // its slit
+        break;
+    }
+    case UI_STYLE_BLOOD:
+        for (F32 sd = -1; sd <= 1; sd += 2) { // two swords, crossed
+            F32 hx = cx - sd * 0.5f * h, hy = cy + 0.5f * h;
+            r_taper(hx, hy, cx + sd * 0.95f * h, cy - 0.95f * h, 0.15f * h, 0.02f * h, t->trim_hi, t->trim);
+            r_taper(hx, hy, hx - sd * 0.3f * h, hy + 0.3f * h, 0.06f * h, 0.07f * h, ui_lit(t->trim_dark, 0.25f), t->trim_dark);
+            r_taper(hx - 0.25f * h, hy - sd * 0.25f * h, hx + 0.25f * h, hy + sd * 0.25f * h, 0.07f * h, 0.07f * h, t->spark, ui_dark(t->spark, 0.3f));
+            ui_disc(hx - sd * 0.36f * h, hy + 0.36f * h, Max(px, 0.09f * h), t->spark, ui_dark(t->spark, 0.3f));
+        }
+        ui_orb(cx, cy, 0.3f * h, t->gem);
+        ui_ring(t, cx, cy, 0.34f * h, Max(px, 0.9f * s));
+        break;
+    case UI_STYLE_HOLY:
+        r_glow(cx, cy, 0.5f * h, 0.6f * h, ui_fade(t->spark, 0.4f));
+        r_star(ui_square(cx, cy, h), t->trim_hi, t->trim, 8, 2.1f, 0, 0);
+        r_star(ui_square(cx, cy, 0.7f * h), ui_lit(t->trim_hi, 0.3f), t->trim_hi, 8, 2.15f, 3.14159f / 8, 0);
+        ui_disc(cx, cy, 0.36f * h, ui_lit(t->gem, 0.5f), ui_mix(t->gem, t->spark, 0.4f));
+        r_rect(ui_square(cx, cy, 0.36f * h), t->trim, 0.36f * h, Max(px, 0.8f * s), 0.5f);
+        break;
+    case UI_STYLE_NATURE:
+        r_taper(cx, cy + 0.6f * h, cx, cy - 0.05f * h, 0.06f * h, 0.05f * h, t->trim_hi, t->trim); // the stem
+        r_leaf(cx - 0.42f * h, cy - 0.02f * h, 0.24f * h, 0.5f * h, -0.95f, ui_lit(t->gem, 0.2f), ui_dark(t->gem, 0.35f), 0);
+        r_leaf(cx + 0.42f * h, cy - 0.02f * h, 0.24f * h, 0.5f * h, 0.95f, ui_lit(t->gem, 0.2f), ui_dark(t->gem, 0.35f), 0);
+        r_leaf(cx, cy - 0.4f * h, 0.27f * h, 0.6f * h, 0, ui_lit(t->gem, 0.35f), ui_dark(t->gem, 0.2f), 0);
+        r_taper(cx, cy + 0.1f * h, cx, cy - 0.85f * h, Max(px * 0.5f, 0.035f * h), 0, ui_dark(t->gem, 0.5f), ui_dark(t->gem, 0.4f)); // a vein
+        ui_orb(cx - 0.16f * h, cy + 0.55f * h, 0.17f * h, t->spark);
+        ui_orb(cx + 0.17f * h, cy + 0.62f * h, 0.15f * h, t->spark);
+        break;
+    case UI_STYLE_STORM: {
+        r_glow(cx, cy, 0.5f * h, 0.5f * h, ui_fade(t->gem, 0.5f));
+        ui_disc(cx, cy, 0.56f * h, ui_lit(t->gem, 0.3f), ui_dark(t->gem, 0.4f));
+        ui_ring(t, cx, cy, 0.8f * h, Max(px, 1.4f * s));
+        // A bolt across it, outlined so it reads on the orb.
+        F32 bx[4] = { 0.3f, -0.18f, 0.16f, -0.28f }, by[4] = { -1.0f, -0.06f, 0.0f, 1.0f }, br[4] = { 0.04f, 0.15f, 0.13f, 0.0f };
+        V4 edge = ui_dark(t->gem, 0.75f);
+        for (int pass = 0; pass < 2; pass += 1) {
+            F32 grow = pass ? 0 : Max(px, 0.8f * s);
+            for (int k = 0; k < 3; k += 1) {
+                r_taper(cx + bx[k] * h, cy + by[k] * h, cx + bx[k + 1] * h, cy + by[k + 1] * h, br[k] * h + grow, br[k + 1] * h + grow,
+                        pass ? ui_lit(t->spark, 0.5f) : edge, pass ? t->spark : edge);
+            }
+        }
+        break;
+    }
+    }
+}
+
+static void ui_corner(UI_Theme *t, F32 cx, F32 cy, F32 size, F32 dx, F32 dy)
+{
+    F32 h = size * 0.5f, px = ui_px();
+    if (t->ornate <= 0) return;
+    switch (t->style) {
+    default:
+    case UI_STYLE_GEARWORK:
+        ui_gem(cx, cy, size, t->trim_hi);
+        break;
+    case UI_STYLE_VOID:
+        ui_disc(cx, cy, 0.42f * h, ui_dark(t->gem, 0.35f), ui_dark(t->gem, 0.8f));
+        r_crescent(ui_square(cx, cy, 0.78f * h), t->trim_hi, t->trim, 0.85f, 0.32f, atan2f(-dy, -dx), 0); // bulging outward
+        break;
+    case UI_STYLE_FROST:
+        r_taper(cx - dx * 0.2f * h, cy - dy * 0.2f * h, cx + dx * 1.25f * h, cy + dy * 1.25f * h, 0.32f * h, 0, ui_lit(t->gem, 0.55f), t->gem);
+        r_star(ui_square(cx, cy, 0.6f * h), t->trim_hi, ui_lit(t->gem, 0.2f), 4, 2.2f, 0, 0);
+        break;
+    case UI_STYLE_FLAME:
+        ui_disc(cx, cy, 0.5f * h, t->trim_hi, t->trim_dark);
+        r_glow(cx, cy, 0.25f * h, 0.45f * h, ui_fade(t->gem, 0.7f));
+        ui_disc(cx, cy, 0.26f * h, t->spark, t->gem); // an ember set in iron
+        break;
+    case UI_STYLE_FEL:
+        r_taper(cx, cy, cx + dx * 0.75f * h, cy + dy * 0.3f * h, 0.3f * h, 0.18f * h, t->trim_hi, t->trim);
+        r_taper(cx + dx * 0.75f * h, cy + dy * 0.3f * h, cx + dx * 0.95f * h, cy + dy * 1.2f * h, 0.18f * h, 0, t->trim_hi, t->trim);
+        ui_orb(cx, cy, 0.34f * h, t->gem);
+        break;
+    case UI_STYLE_BLOOD:
+        r_taper(cx, cy, cx + dx * 1.35f * h, cy + dy * 1.35f * h, 0.3f * h, 0, t->trim_hi, t->trim);
+        r_taper(cx, cy, cx + dx * 1.1f * h, cy, 0.24f * h, 0, t->trim_hi, t->trim);
+        r_taper(cx, cy, cx, cy + dy * 1.1f * h, 0.24f * h, 0, t->trim_hi, t->trim);
+        ui_orb(cx, cy, 0.38f * h, t->gem);
+        break;
+    case UI_STYLE_HOLY:
+        r_star(ui_square(cx, cy, h), t->trim_hi, t->trim, 4, 2.0f, 0, 0);
+        r_star(ui_square(cx, cy, 0.6f * h), ui_lit(t->trim_hi, 0.3f), t->trim, 4, 2.0f, 3.14159f / 4, 0);
+        ui_disc(cx, cy, Max(px, 0.18f * h), ui_lit(t->gem, 0.5f), t->gem);
+        break;
+    case UI_STYLE_NATURE:
+        r_leaf(cx + dx * 0.4f * h, cy + dy * 0.4f * h, 0.3f * h, 0.72f * h, atan2f(dx, -dy), ui_lit(t->gem, 0.25f), ui_dark(t->gem, 0.3f), 0);
+        ui_orb(cx - dx * 0.1f * h, cy - dy * 0.1f * h, 0.28f * h, t->spark);
+        break;
+    case UI_STYLE_STORM:
+        ui_disc(cx, cy, 0.55f * h, t->trim_hi, t->trim_dark);
+        r_glow(cx, cy, 0.25f * h, 0.4f * h, ui_fade(t->gem, 0.7f));
+        ui_disc(cx, cy, 0.28f * h, ui_lit(t->gem, 0.45f), t->gem);
+        break;
+    }
 }
 
 static void ui_divider(F32 x0, F32 x1, F32 y)
@@ -344,7 +546,8 @@ static void ui_divider(F32 x0, F32 x1, F32 y)
     UI_Theme *t = &ui.theme;
     F32 o = t->ornate, s = ui.scale, px = ui_px();
     if (o <= 0 || x1 - x0 < 60 * s) { r_rect(rect(x0, y - px * 0.5f, x1, y + px * 0.5f), t->border, 0, 0, 0); return; }
-    F32 cx = (x0 + x1) * 0.5f, gap = 11 * s, fade = Min(160 * s, (cx - gap - x0) * 0.6f);
+    B32 gears = t->style == UI_STYLE_GEARWORK;
+    F32 cx = (x0 + x1) * 0.5f, gap = gears ? 11 * s : 19 * s, fade = Min(160 * s, (cx - gap - x0) * 0.6f);
     V4 metal = ui_mix(t->border, t->trim, 0.85f * o), none = metal;
     none.w = 0;
     F32 h = Max(px, 1 * s), y0 = y - h * 0.5f;
@@ -352,9 +555,45 @@ static void ui_divider(F32 x0, F32 x1, F32 y)
     r_rect(rect(x0 + fade, y0, cx - gap, y0 + h), metal, 0, 0, 0);
     r_rect(rect(cx + gap, y0, x1 - fade, y0 + h), metal, 0, 0, 0);
     r_rect_gradient(rect(x1 - fade, y0, x1, y0 + h), metal, none, 0, 0, 0, 1);
-    r_diamond(rect(cx - gap + 2 * s, y - 2 * s, cx - gap + 6 * s, y + 2 * s), metal, metal, 0);
-    r_diamond(rect(cx + gap - 6 * s, y - 2 * s, cx + gap - 2 * s, y + 2 * s), metal, metal, 0);
-    ui_gem(cx, y, 11 * s, t->gem);
+    // The style's motifs either side of the emblem (sd: -1 left, 1 right).
+    for (F32 sd = -1; sd <= 1; sd += 2) {
+        F32 g = cx + sd * gap;
+        switch (t->style) {
+        default:
+        case UI_STYLE_GEARWORK:
+            r_diamond(rect(g - sd * 4 * s - 2 * s, y - 2 * s, g - sd * 4 * s + 2 * s, y + 2 * s), metal, metal, 0);
+            break;
+        case UI_STYLE_VOID:
+            ui_disc(g, y, 1.7f * s, t->spark, ui_dark(t->spark, 0.3f));
+            ui_disc(g + sd * 7 * s, y, 1.1f * s, ui_fade(t->spark, 0.7f), ui_fade(t->spark, 0.7f));
+            break;
+        case UI_STYLE_FROST:
+            r_taper(g - sd * 3 * s, y, g + sd * 9 * s, y, 2.0f * s, 0, ui_lit(t->gem, 0.5f), t->gem);
+            break;
+        case UI_STYLE_FLAME:
+            r_glow(g, y, 1.4f * s, 2.5f * s, ui_fade(t->gem, 0.6f));
+            ui_disc(g, y, 1.5f * s, t->spark, t->gem);
+            ui_disc(g + sd * 7 * s, y - 2 * s, 1.0f * s, ui_fade(t->spark, 0.8f), ui_fade(t->gem, 0.8f));
+            break;
+        case UI_STYLE_FEL:
+            r_star(ui_square(g, y, 3.2f * s), ui_lit(t->spark, 0.3f), t->spark, 4, 2.0f, 0, 0);
+            break;
+        case UI_STYLE_BLOOD:
+            r_taper(g - sd * 3 * s, y, g + sd * 10 * s, y, 2.4f * s, 0, t->trim_hi, t->trim);
+            break;
+        case UI_STYLE_HOLY:
+            r_star(ui_square(g, y, 3.4f * s), t->trim_hi, t->trim, 4, 2.0f, 0, 0);
+            break;
+        case UI_STYLE_NATURE:
+            r_leaf(g + sd * 2 * s, y, 1.8f * s, 4.6f * s, sd * 1.5708f, ui_lit(t->gem, 0.25f), ui_dark(t->gem, 0.3f), 0);
+            break;
+        case UI_STYLE_STORM:
+            ui_disc(g, y, 2.2f * s, t->trim_hi, t->trim_dark);
+            ui_disc(g, y, 1.0f * s, ui_lit(t->gem, 0.4f), t->gem);
+            break;
+        }
+    }
+    ui_emblem(t, cx, y, gears ? 11 * s : 20 * s);
 }
 
 static void ui_gem(F32 cx, F32 cy, F32 size, V4 color)
@@ -379,8 +618,61 @@ static void ui_cog(F32 cx, F32 cy, F32 r, F32 angle, V4 color)
 
 static B32 ui_spinner(F32 cx, F32 cy, F32 r)
 {
-    F32 a = (F32)fmod((F64)os_now_ms() / 2400.0, 1.0) * 6.2831853f;
-    ui_cog(cx, cy, r, a, ui.theme.ornate > 0 ? ui.theme.trim_hi : ui.theme.accent);
+    UI_Theme *t = &ui.theme;
+    F64 ms = (F64)os_now_ms();
+    F32 a = (F32)fmod(ms / 2400.0, 1.0) * 6.2831853f, T = (F32)fmod(ms / 1000.0, 1000.0), tau = 6.2831853f;
+    if (t->ornate <= 0) { ui_cog(cx, cy, r, a, t->accent); return 1; }
+    switch (t->style) {
+    default:
+    case UI_STYLE_GEARWORK:
+        ui_cog(cx, cy, r, a, t->trim_hi);
+        break;
+    case UI_STYLE_VOID:
+        ui_disc(cx, cy, 0.55f * r, ui_dark(t->gem, 0.5f), ui_dark(t->gem, 0.85f));
+        r_crescent(ui_square(cx, cy, r), t->trim_hi, t->trim, 0.84f, 0.3f, a, 0);
+        ui_disc(cx + cosf(-2 * a) * 0.95f * r, cy + sinf(-2 * a) * 0.95f * r, 0.16f * r, t->spark, t->spark);
+        break;
+    case UI_STYLE_FROST:
+        ui_snowflake(t, cx, cy, r, a * 0.5f);
+        break;
+    case UI_STYLE_FLAME:
+        ui_flame(t, cx, cy + 0.12f * r, 0.85f * r, 0.12f * sinf(T * 9) + 0.07f * sinf(T * 23), 0.3f * sinf(T * 5));
+        break;
+    case UI_STYLE_FEL:
+        r_glow(cx, cy, 0.4f * r, 0.5f * r, ui_fade(t->gem, 0.5f));
+        r_star(ui_square(cx, cy, 0.88f * r), ui_lit(t->gem, 0.4f), t->gem, 5, 2.3f, a, 0);
+        r_rect(ui_square(cx, cy, r), t->spark, r, Max(ui_px(), 0.13f * r), 0.5f);
+        break;
+    case UI_STYLE_BLOOD:
+        for (int k = 0; k < 3; k += 1) { // a whirlwind of blades
+            F32 ang = a * 1.6f + k * tau / 3;
+            F32 mx = cx + cosf(ang) * 0.55f * r, my = cy + sinf(ang) * 0.55f * r;
+            r_taper(cx, cy, mx, my, 0.22f * r, 0.17f * r, t->trim_hi, t->trim);
+            r_taper(mx, my, cx + cosf(ang + 0.55f) * r, cy + sinf(ang + 0.55f) * r, 0.17f * r, 0, t->trim_hi, t->trim);
+        }
+        ui_orb(cx, cy, 0.3f * r, t->gem);
+        break;
+    case UI_STYLE_HOLY:
+        r_glow(cx, cy, 0.45f * r, 0.5f * r, ui_fade(t->spark, 0.4f));
+        r_star(ui_square(cx, cy, r), t->trim_hi, t->trim, 12, 3.0f, a * 0.5f, 0);
+        ui_disc(cx, cy, 0.38f * r, ui_lit(t->gem, 0.5f), ui_mix(t->gem, t->spark, 0.4f));
+        break;
+    case UI_STYLE_NATURE:
+        for (int k = 0; k < 3; k += 1) { // leaves in a pinwheel
+            F32 ang = a + k * tau / 3, ux = cosf(ang), uy = sinf(ang);
+            r_leaf(cx + ux * 0.5f * r, cy + uy * 0.5f * r, 0.22f * r, 0.5f * r, atan2f(ux, -uy) + 0.4f, ui_lit(t->gem, 0.25f), ui_dark(t->gem, 0.3f), 0);
+        }
+        ui_orb(cx, cy, 0.24f * r, t->spark);
+        break;
+    case UI_STYLE_STORM:
+        ui_disc(cx, cy, 0.3f * r, t->trim_hi, t->trim_dark);
+        for (int k = 0; k < 3; k += 1) { // orbs circling, crackling
+            F32 ang = a * 1.5f + k * tau / 3, ox = cx + cosf(ang) * 0.68f * r, oy = cy + sinf(ang) * 0.68f * r;
+            r_glow(ox, oy, 0.15f * r, 0.25f * r, ui_fade(t->gem, 0.6f));
+            ui_disc(ox, oy, 0.22f * r, ui_lit(t->gem, 0.5f), t->gem);
+        }
+        break;
+    }
     return 1;
 }
 
@@ -743,6 +1035,7 @@ static B32 ui_frame(WM_Frame *f, B32 (*build)(void))
     if (f_begin_frame()) wm_request_frame(); // the glyph atlas was full: emptied, so draw again
     ui.cursor = UI_CURSOR_ARROW;
     r_begin_frame();
+    ui_aura(rect(0, 0, ui.width, ui.height), 0, 1); // the theme's glow over the top of the window
     ui.tip = str8(0, 0);
     B32 again = build();
     ui_ids_end_frame();

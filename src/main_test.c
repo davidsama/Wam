@@ -645,6 +645,9 @@ static void test_checks(Arena *a)
     st = wam_settings_load(a);
     CHECK(st.window.x == -1200 && st.window.y == 40 && st.window.w == 1300 && st.window.h == 800 && st.window.maximized);
     CHECK(str8_match(st.wow_root, str8_lit("D:\\WoW"), 0) && st.detail_share == 0.375);
+    CHECK(wam_save_theme(str8_lit("void")));
+    st = wam_settings_load(a);
+    CHECK(str8_match(st.theme, str8_lit("void"), 0) && st.window.w == 1300 && str8_match(st.wow_root, str8_lit("D:\\WoW"), 0));
     SetEnvironmentVariableW(L"APPDATA", had ? old_appdata : 0);
     os_delete_tree(dir);
 }
