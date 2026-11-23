@@ -23,7 +23,7 @@ The rest of this file explains how wam is built, how it works and how the code i
 ```
 vsenv               once per window: sets up the C/C++ tools (tools\vsenv.bat)
 build.bat           debug
-build.bat release   optimized
+build.bat release   optimized, shaders compiled (fxc)
 build.bat test      build + run offline unit tests (wamtest.exe)
 build.bat asan      the same tests with AddressSanitizer
 ```
@@ -247,4 +247,3 @@ Give repeated parts their own id scope (`ui_scope_push`, or the key you pass `ui
 - WoWInterface has no search API; wam searches its whole file list locally instead. Its list has no summaries.
 - Tukui reports no download counts, so ElvUI sorts last under Most downloaded (it's first under Best match when you search for it).
 - Pictures inside descriptions load by themselves only from the addon sites' own hosts (`rich_picture_inline`); others show as their name (click to see one). Videos don't show; GIFs move only in the gallery's large picture and the viewer. Only `https://` links in them are clickable. Emoji and other characters Segoe UI lacks show as boxes or question marks.
-- The renderer compiles its shaders at startup (about 30 ms); compiling them when building, with `fxc`, would save that.

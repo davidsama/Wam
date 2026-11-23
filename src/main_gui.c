@@ -34,7 +34,9 @@
 #include <dwmapi.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
+#ifndef R_SHADERS_BUILT
 #include <d3dcompiler.h>
+#endif
 #include <math.h>
 
 #include "base/base.h"

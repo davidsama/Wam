@@ -3,6 +3,10 @@
 
 1 ICON "wam.ico"
 
+#ifdef WAM_SHADER_SOURCE
+SHADERS RCDATA "shaders.hlsl"   // debug builds compile the shaders when they start
+#endif
+
 #define WAM_FILE_DESCRIPTION "wam - WoW Addon Manager"
 #define WAM_FILE_NAME        "wam.exe"
 #include "version.rc"
