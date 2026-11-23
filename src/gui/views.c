@@ -241,7 +241,8 @@ static B32 draw_installed(Rect list)
     F32 col_actions = list.x1 - 16 * s - actions_w;
 
     for (S64 i = l.first; i < l.last; i += 1) {
-        Rect rr = ui_list_row(&l, i);
+        String8 key = i < (S64)npend ? str8_pushf(fa, "pending %u", pend[i]->task) : snap->rows[vis[i - npend]].key;
+        Rect rr = ui_list_row(&l, i, key);
         F32 ry = rr.y0;
         if (i < (S64)npend) {
             // An install on its way: its picture and name, and how far it is.
@@ -319,7 +320,7 @@ static B32 draw_installed(Rect list)
 
         // Checkbox; clicking the row's text toggles it too (but not a click on a link).
         Rect name_area = rect(rr.x0, ry, col_actions - 8 * s, ry + row_h);
-        B32 toggle = ui_checkbox(rr.x0 + 18 * s, ry + row_h * 0.5f, checked);
+        B32 toggle = ui_checkbox(str8_lit("select"), rr.x0 + 18 * s, ry + row_h * 0.5f, checked);
         if (!toggle && !pressed_pill && ui_mouse_in(name_area) && ui_mouse_in(list) && ui.in.released && point_in(name_area, ui.in.press_x, ui.in.press_y)) toggle = 1;
         if (toggle) { if (checked) keyset_remove(&app.selected, row->key); else keyset_add(&app.selected, row->key); }
 
@@ -340,7 +341,7 @@ static B32 draw_installed(Rect list)
         } else if (row->update && !row->pinned) {
             // Website-only files open CurseForge's download page in a window: the arrow says so.
             B32 via_page = site_only_of(row->id) == SITE_ONLY_PAGE;
-            String8 label = row->edited ? str8_lit("Overwrite edits") : via_page ? str8_lit("Update \xE2\x86\x97") : str8_lit("Update");
+            String8 label = row->edited ? str8_lit("Overwrite edits###update") : via_page ? str8_lit("Update \xE2\x86\x97###update") : str8_lit("Update###update");
             Rect ub = rect(x - ui_button_width(label), by, x, by + bh);
             // A single-row update is explicit, so it also replaces local edits (the label says so).
             if (ui_button(ub, label, C_TEXT, row->edited ? ui_hex(0x6b4a12, 1) : C_ACCENT_BG, row->edited ? ui_hex(0x86601c, 1) : C_ACCENT)) {
@@ -906,7 +907,7 @@ static F32 draw_browse_filters(Rect r)
     F32 hx = r.x1 - f_text_width(ui.font.caption, hl);
     f_draw_text(ui.font.caption, hx, r.y0 + (r.y1 - r.y0 - ui.font.caption->line_height) * 0.5f, hl, C_DIM, 0);
     F32 cbx = hx - 22 * s;
-    if (ui_checkbox(cbx, (r.y0 + r.y1) * 0.5f, app.hide_installed)) app.hide_installed = !app.hide_installed;
+    if (ui_checkbox(str8_lit("hide installed"), cbx, (r.y0 + r.y1) * 0.5f, app.hide_installed)) app.hide_installed = !app.hide_installed;
     Rect hit = rect(cbx, y, r.x1, y + h);
     if (ui_clicked(hit) && !point_in(rect(cbx, y, cbx + 16 * s, y + h), ui.in.press_x, ui.in.press_y)) app.hide_installed = !app.hide_installed;
     String8 info = app.catalog_served < app.catalog_asked && app.cat.count ? str8_lit("Updating the list...")
@@ -1285,7 +1286,7 @@ static B32 draw_search(Rect area)
     app.hover_index = -1;
     for (S64 i = l.first; i < l.last; i += 1) {
         SearchResult *r = &app.cat.v[app.order[i]];
-        Rect rr = ui_list_row(&l, i);
+        Rect rr = ui_list_row(&l, i, r->id);
         F32 ry = rr.y0;
         B32 hot = ui_mouse_in(rr) && ui_mouse_in(list), sel = i == app.sel_index;
         if (hot) app.hover_index = i;
@@ -1329,8 +1330,8 @@ static B32 draw_search(Rect area)
         } else {
             // Enter installs the selected row; the arrow: the file comes through CurseForge's website.
             B32 via_page = r->site_only == SITE_ONLY_PAGE;
-            String8 label = sel ? (via_page ? str8_lit("Install \xE2\x86\x97  \xE2\x86\xB5") : str8_lit("Install  \xE2\x86\xB5"))
-                                : (via_page ? str8_lit("Install \xE2\x86\x97") : str8_lit("Install"));
+            String8 label = sel ? (via_page ? str8_lit("Install \xE2\x86\x97  \xE2\x86\xB5###install") : str8_lit("Install  \xE2\x86\xB5###install"))
+                                : (via_page ? str8_lit("Install \xE2\x86\x97###install") : str8_lit("Install###install"));
             action = rect(x - ui_button_width(label), by, x, by + bh);
             if (ui_button(action, label, C_TEXT, C_ACCENT_BG, C_ACCENT)) browse_install(r);
         }
@@ -1342,7 +1343,7 @@ static B32 draw_search(Rect area)
         }
     }
     if (paging && count) {
-        F32 ry = ui_list_row(&l, (S64)count).y0;
+        F32 ry = ui_list_row(&l, (S64)count, str8_lit("loading more")).y0;
         ui_text_centered(ui.font.caption, rect(list.x0, ry, list.x1, ry + row_h), str8_lit("Loading more..."), C_FAINT);
     }
     // Near the end: the next page of this sort (CurseForge).
@@ -1386,14 +1387,14 @@ static B32 draw_search(Rect area)
         ui.clip = area;
         r_set_clip(area);
         Rect grip = rect(list.x1 - 1 * s, list.y0, list.x1 + 6 * s, list.y1); // on the panel side: the list's scrollbar is just left of the line
-        B32 was = app.detail_dragging;
-        if (ui_drag_handle(grip, &app.detail_dragging)) {
+        UI_Signal g = ui_drag_handle(ui_id(str8_lit("detail divider")), grip);
+        if (g.dragging) {
             F32 w = Clamp(300 * s, area.x1 - ui.in.mx, pw_max);
             app.detail_share = w / aw;
             animating = 1;
         }
-        if (app.detail_dragging || ui_mouse_in(grip)) r_rect(rect(list.x1 - 1 * s, list.y0, list.x1 + 1 * s, list.y1), C_ACCENT, 0, 0, 0);
-        if (was && !app.detail_dragging) wam_save_detail_share(app.detail_share); // remembered for next time
+        if (g.dragging || g.hovering) r_rect(rect(list.x1 - 1 * s, list.y0, list.x1 + 1 * s, list.y1), C_ACCENT, 0, 0, 0);
+        if (g.released) wam_save_detail_share(app.detail_share); // remembered for next time
     }
     return animating;
 }
@@ -1458,7 +1459,7 @@ static B32 draw_downloads(Rect area)
 
     for (S64 i = l.first; i < l.last; i += 1) {
         DownloadItem *it = &ds->list.v[i];
-        Rect rr = ui_list_row(&l, i);
+        Rect rr = ui_list_row(&l, i, it->path);
         F32 ry = rr.y0;
         if (ui_mouse_in(rr) && ui_mouse_in(list)) r_rect(rr, C_HOVER, 0, 0, 0);
         if (i > 0) r_rect(rect(rr.x0 + 16 * s, ry, rr.x1 - 16 * s, ry + ui_px()), C_LINE, 0, 0, 0);

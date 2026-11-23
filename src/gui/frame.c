@@ -129,11 +129,14 @@ static B32 app_frame(void)
     {
         F32 bh = 28 * s;
         Rect b = rect(hright - bh, (header_h - bh) * 0.5f, hright, (header_h + bh) * 0.5f);
-        B32 hot = ui_mouse_in(b);
+        UI_Id id = ui_id(str8_lit("settings"));
+        UI_Signal sg = ui_signal(id, b, UI_FOCUSABLE);
+        F32 t = ui_anim(id, (F32)sg.hovering);
         wm_caption_hole(b);
-        ui_plate(b, hot ? C_BUTTON_HI : C_BUTTON, 6 * s);
-        ui_cog((b.x0 + b.x1) * 0.5f, (b.y0 + b.y1) * 0.5f, 8 * s, hot ? 0.26f : 0, hot ? C_TEXT : C_DIM); // turns a little on hover
-        if (ui_clicked(b)) settings_open();
+        ui_plate(b, ui_mix(C_BUTTON, C_BUTTON_HI, t), 6 * s);
+        ui_cog((b.x0 + b.x1) * 0.5f, (b.y0 + b.y1) * 0.5f, 8 * s, 0.26f * t, ui_mix(C_DIM, C_TEXT, t)); // turns a little on hover
+        ui_focus_ring(id, b, 6 * s);
+        if (sg.clicked) settings_open();
         hright = b.x0 - 8 * s;
     }
     F32 logo = 32 * s, title_w = f_text_width(ui.font.title, title) + 24 * s;
@@ -169,9 +172,11 @@ static B32 app_frame(void)
         F32 bh = 28 * s, max_w = Max(root_min, hright - x - 12 * s);
         F32 bw = root_as_icon ? root_icon : Min(f_text_width(ui.font.caption, root_label) + 24 * s, max_w);
         Rect b = rect(hright - bw, (header_h - bh) * 0.5f, hright, (header_h + bh) * 0.5f);
-        B32 hot = ui_mouse_in(b);
+        UI_Id id = ui_id(str8_lit("install picker"));
+        UI_Signal sg = ui_signal(id, b, UI_FOCUSABLE);
         wm_caption_hole(b);
-        ui_plate(b, hot ? C_BUTTON_HI : C_BUTTON, 6 * s);
+        ui_plate(b, ui_mix(C_BUTTON, C_BUTTON_HI, ui_anim(id, (F32)sg.hovering)), 6 * s);
+        ui_focus_ring(id, b, 6 * s);
         if (root_as_icon) { // a folder (Segoe Fluent Icons / MDL2) and the arrow
             F32 gx = b.x0 + 10 * s, mid = (b.y0 + b.y1) * 0.5f;
             gx = f_draw_text(ui.font.glyphs, gx, mid - ui.font.glyphs->line_height * 0.5f, str8_lit("\xEE\xA2\xB7"), C_DIM, 0) + 5 * s;
@@ -181,7 +186,7 @@ static B32 app_frame(void)
                         app.wow_root.size ? C_DIM : C_TEXT, bw - 24 * s);
         }
         app.root_btn = b;
-        if (ui_clicked(b)) wm_defer(show_root_menu);
+        if (sg.clicked) wm_defer(show_root_menu);
     }
 
     ui_divider(0, W, header_h);
@@ -200,9 +205,9 @@ static B32 app_frame(void)
         U64 shown = snap ? snap->row_count : 0;
         if (v == VIEW_INSTALLED && snap && app.gone.count) for (U64 i = 0; i < snap->row_count; i += 1) shown -= keyset_has(&app.gone, snap->rows[i].key);
         if (v == VIEW_INSTALLED) { PendingInstall *pend[8]; shown += feedback_installs(pend, ArrayCount(pend)); }
-        String8 label = v == VIEW_INSTALLED ? str8_pushf(fa, "Installed  %llu", shown)
+        String8 label = v == VIEW_INSTALLED ? str8_pushf(fa, "Installed  %llu###installed", shown)
                       : v == VIEW_SEARCH ? str8_lit("Get addons")
-                      : dl_waiting && !dl_new ? str8_pushf(fa, "Downloads  %llu", dl_waiting) : str8_lit("Downloads");
+                      : dl_waiting && !dl_new ? str8_pushf(fa, "Downloads  %llu###downloads", dl_waiting) : str8_lit("Downloads###downloads");
         // New archives in the download folder: a bright "N new" badge on the tab until they're installed.
         String8 badge = v == VIEW_DOWNLOADS && dl_new ? str8_pushf(fa, "%llu new", dl_new) : str8(0, 0);
         Rect b = rect(x, ty, x + ui_tab_width(label, badge), ty + th);
@@ -222,12 +227,12 @@ static B32 app_frame(void)
         Rect cb = rect(rx - ui_button_width(clear), ty, rx, ty + th);
         if (ui_button(cb, clear, C_TEXT, C_BUTTON, C_BUTTON_HI)) keyset_clear(&app.selected);
         rx = cb.x0 - 8 * s;
-        String8 rem = str8_pushf(fa, "Remove  %u", app.selected.count);
+        String8 rem = str8_pushf(fa, "Remove  %u###remove", app.selected.count);
         Rect rb = rect(rx - ui_button_width(rem), ty, rx, ty + th);
         if (ui_button(rb, rem, C_TEXT, C_DANGER, C_DANGER_HI)) start_remove(&app.selected);
         rx = rb.x0 - 8 * s;
         if (upd.count) {
-            String8 label = str8_pushf(fa, "Update  %llu", upd.count);
+            String8 label = str8_pushf(fa, "Update  %llu###update", upd.count);
             Rect ub = rect(rx - ui_button_width(label), ty, rx, ty + th);
             if (ui_button(ub, label, C_TEXT, C_ACCENT_BG, C_ACCENT)) feedback_update(push_task(TASK_UPDATE, str8_list_join(fa, &upd, str8_lit("\n"))), &upd);
         }
@@ -238,7 +243,7 @@ static B32 app_frame(void)
         if (ui_button(cb, check, C_TEXT, C_BUTTON, C_BUTTON_HI)) push_task(TASK_SYNC, str8(0, 0));
         rx = cb.x0 - 8 * s;
         if (snap && snap->updates) {
-            String8 all = str8_pushf(fa, "Update all  %llu", snap->updates);
+            String8 all = str8_pushf(fa, "Update all  %llu###update all", snap->updates);
             Rect ab = rect(rx - ui_button_width(all), ty, rx, ty + th);
             if (ui_button(ab, all, C_TEXT, C_ACCENT_BG, C_ACCENT)) {
                 // Update all: what it will update shows as updating (not pinned or edited ones: it skips those).
@@ -284,7 +289,7 @@ static B32 app_frame(void)
             f_draw_text(ui.font.bold, tx, ly, what, C_TEXT, tw);
             ly += line;
             if (plan.deps.count) {
-                if (ui_checkbox(tx, ly + ui.font.normal->line_height * 0.5f, app.remove_with_deps)) app.remove_with_deps = !app.remove_with_deps;
+                if (ui_checkbox(str8_lit("with dependencies"), tx, ly + ui.font.normal->line_height * 0.5f, app.remove_with_deps)) app.remove_with_deps = !app.remove_with_deps;
                 String8 d = str8_pushf(fa, "Also remove %llu dependenc%s nothing else needs: %.*s", plan.deps.count,
                                        plan.deps.count == 1 ? "y" : "ies", S8F(str8_list_join(fa, &plan.deps, str8_lit(", "))));
                 f_draw_text(ui.font.normal, tx + 26 * s, ly, d, C_DIM, tw - 26 * s);
@@ -333,7 +338,7 @@ static B32 app_frame(void)
     F32 right = W - 20 * s - pw - 24 * s;
     if (app.offer_count) {
         // Several addons only CurseForge's pages may serve (e.g. after Update all): open them on request.
-        String8 label = str8_pushf(fa, "Get %u from CurseForge", app.offer_count);
+        String8 label = str8_pushf(fa, "Get %u from CurseForge###get from curseforge", app.offer_count);
         F32 bw = ui_small_button_width(label), bh = 22 * s;
         F32 by = H - status_h + (status_h - bh) * 0.5f;
         Rect b = rect(right - bw, by, right, by + bh);

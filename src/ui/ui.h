@@ -36,6 +36,16 @@ typedef struct UI_Theme {
 // buttons, glyphs_big (14px) for icons in rows.
 typedef struct UI_Fonts { F_Font *normal, *bold, *caption, *title, *icon, *glyphs, *glyphs_big; } UI_Fonts;
 
+// A widget's identity from one frame to the next: a hash of its label (or a name, or an address)
+// within the current scope (ui_scope_push). 0 = none.
+typedef struct UI_Id { U64 v; } UI_Id;
+
+#define UI_SCOPE_MAX 16
+#define UI_FOCUS_MAX 256
+#define UI_ANIM_SLOTS 256
+typedef struct UI_Focusable { UI_Id id; B32 in_overlay; } UI_Focusable;
+typedef struct UI_AnimSlot { UI_Id id; F32 value; U64 frame; } UI_AnimSlot;
+
 typedef struct UI_State {
     F32 scale;               // DPI scale: 1.0 at 96 dpi
     UI_Theme theme;
@@ -56,6 +66,23 @@ typedef struct UI_State {
     U32 fps;                 // frames drawn in the last second (0 when idle: frames only come on demand)
     String8 tip;             // this frame's tooltip (ui_tooltip), drawn over everything at the end
     Rect tip_anchor;
+    F32 dt;                  // seconds since the last frame, for animation (at most 1/30: after a pause, animations start)
+    U64 frame_index;
+
+    // Identity: see ui_signal.
+    U64 scope[UI_SCOPE_MAX]; // seeds of the scopes pushed (the top one hashes new ids)
+    U32 scope_count;
+    UI_Id hot;               // the last widget under the mouse this frame
+    UI_Id active;            // the widget the left button was pressed on, while it's held (and in the frame it's let go)
+    F32 drag_grab;           // the active widget's own drag state (e.g. where on a scrollbar's thumb it was grabbed)
+    UI_Id focus;             // the widget the keyboard is on (Tab / Shift+Tab), 0 = none
+    B32 focus_visible;       // focus came from the keyboard: show the ring (a mouse press or typing hides it)
+    B32 focus_activate;      // Enter or Space this frame: the focused widget is clicked
+    B32 eat_space_text;      // Space activated the focused widget: its ' ' isn't typing
+    B32 focus_seen;          // the focused widget was drawn this frame
+    UI_Focusable focusables[UI_FOCUS_MAX], focusables_prev[UI_FOCUS_MAX]; // in drawing order, this frame and the last
+    U32 focusable_count, focusable_prev_count;
+    UI_AnimSlot anim[UI_ANIM_SLOTS];
 } UI_State;
 
 static UI_State ui;
@@ -71,7 +98,7 @@ static V4   ui_mix(V4 a, V4 b, F32 t);         // a to b; t 0..1
 static F32  ui_px(void);                       // one physical pixel, at least 1
 static B32  ui_mouse_in(Rect r);               // respects the overlay and blocked areas
 static void ui_block_mouse(Rect r);            // widgets drawn after this, this frame, don't see the mouse in r
-static B32  ui_clicked(Rect r);                // pressed and released inside r, this frame
+static B32  ui_clicked(Rect r);                // pressed and released inside r, this frame (no identity: see ui_signal)
 static UI_Theme ui_theme_dark(void);         // flat, neutral dark gray-blue (ornate 0)
 static UI_Theme ui_theme_tinker(void);       // midnight blue with gold and bronze trim, bevels and gems (ornate 1)
 static void ui_fonts_load(void);               // (re)builds ui.font for ui.scale (Segoe UI)
@@ -90,6 +117,46 @@ static F32 ui_window_buttons(F32 right, F32 h);
 // Testing: when ui_frame_log is set, each frame appends its timings there; when ui_shot_dir is
 // set, F12 saves the next frame there as shot-N.bmp (and doesn't reach the app).
 static String8 ui_frame_log, ui_shot_dir;
+
+//- Identity, interaction, focus, animation
+//
+// A widget that remembers anything from one frame to the next (being pressed, dragged, focused,
+// half-way through a hover fade) has a UI_Id. ui_id(label) hashes the label within the current
+// scope: push a scope for each repeated part (ui_list_row does it per row), so two rows' "Install"
+// buttons are different widgets. In a label, "text##more" shows only text but hashes it all;
+// "text###key" hashes only key, so a label whose text changes ("Update  3") keeps its identity.
+//
+// ui_signal(id, r, flags) is what the user does to the widget this frame. Pressing the left button
+// on it makes it active until the button is let go: it gets the drag even when the mouse leaves it.
+// UI_FOCUSABLE widgets join the Tab order (only those in the overlay, while a popup is up); Enter or
+// Space clicks the focused one, Esc lets go of it, and so do typing and a mouse press.
+
+static UI_Id ui_id(String8 label);              // see "##" / "###" above
+static UI_Id ui_id_ptr(void *p);                // for state with an address (a UI_Scroll)
+static B32   ui_id_match(UI_Id a, UI_Id b);
+static void  ui_scope_push(String8 key);
+static void  ui_scope_push_u64(U64 key);
+static void  ui_scope_pop(void);
+static String8 ui_label_text(String8 label);    // what's shown of a label ("text##more" -> "text")
+
+enum { UI_FOCUSABLE = 1 };
+typedef struct UI_Signal {
+    B32 hovering;            // the mouse is over it (ui_mouse_in)
+    B32 pressed;             // the left button went down on it this frame (it's now active)
+    B32 dragging;            // it's active and the button is still held (the mouse may be elsewhere)
+    B32 released;            // the button went up after a press on it (wherever the mouse is)
+    B32 clicked;             // pressed and released on it, or Enter / Space while it has the focus
+    B32 focused;             // it has the keyboard focus
+    B32 keyboard;            // the click was Enter / Space (the mouse may be anywhere)
+} UI_Signal;
+static UI_Signal ui_signal(UI_Id id, Rect r, U32 flags);
+static B32  ui_is_active(UI_Id id);
+// The keyboard focus ring around r (radius: r's corners), if id has the focus and it came from the keyboard.
+static void ui_focus_ring(UI_Id id, Rect r, F32 radius);
+// A value per widget easing toward target (0..1) over about a tenth of a second, e.g. a hover fade:
+// ui_mix(color, hot_color, ui_anim(id, hovering)). It asks for frames until it gets there; a widget
+// seen for the first time starts at target.
+static F32  ui_anim(UI_Id id, F32 target);
 
 //- Ornaments
 //
@@ -122,7 +189,7 @@ static void ui_text_centered(F_Font *f, Rect r, String8 s, V4 color);
 static void ui_pill(Rect r, String8 label, F_Font *f, V4 fg, V4 bg);              // fully rounded label
 static B32  ui_button(Rect r, String8 label, V4 fg, V4 bg, V4 bg_hot);            // true when clicked
 static F32  ui_button_width(String8 label);
-static B32  ui_checkbox(F32 x, F32 center_y, B32 checked);                        // 16px; true when clicked
+static B32  ui_checkbox(String8 name, F32 x, F32 center_y, B32 checked);          // 16px; true when clicked
 // Draws text with the bytes at `marks` (sorted offsets, e.g. fuzzy-match positions) in `hi`.
 static F32  ui_text_highlighted(F_Font *f, F32 x, F32 y, String8 text, U8 *marks, U32 mark_count, V4 base, V4 hi, F32 max_w);
 // A thin bar sliding along r's top edge, for "loading". Returns 1 (keeps frames coming).
@@ -133,9 +200,9 @@ static F32  ui_text_wrapped(F_Font *f, F32 x, F32 y, F32 w, String8 text, V4 col
 // Pictures from URLs: see ui_image.c (ui_image(), ui_image_fetch). ui_avatar there draws a picture,
 // or until (unless) it loads, the name's initial on a colored square.
 
-// A handle to drag (e.g. a divider between panes): true while it's being dragged, with the mouse at
-// ui.in.mx / my. Shows the left-right resize pointer while hovered or dragged. *dragging is its state.
-static B32  ui_drag_handle(Rect zone, B32 *dragging);
+// A handle to drag (e.g. a divider between panes): .dragging while it's being dragged, with the mouse
+// at ui.in.mx / my, .released when it's let go. Shows the left-right resize pointer while hovered or dragged.
+static UI_Signal ui_drag_handle(UI_Id id, Rect zone);
 
 // A tooltip for what's under the mouse: call it while `anchor` is hovered. It's drawn after the
 // frame, over everything, below the anchor (above it near the window's bottom).
@@ -144,7 +211,7 @@ static void ui_tooltip(Rect anchor, String8 text);
 // Smooth wheel scrolling for a list of content_h pixels shown in `list`, and its scrollbar along the
 // right edge: drag the thumb, or press beside it to jump there. Call ui_scroll_list before drawing
 // the rows (it takes scrollbar clicks before they can) and ui_scrollbar after. Returns 1 while animating.
-typedef struct UI_Scroll { F32 pos, target; B32 dragging; F32 grab; } UI_Scroll;
+typedef struct UI_Scroll { F32 pos, target; } UI_Scroll; // its scrollbar's drag is the active widget ui_id_ptr(sc)
 static B32  ui_scroll_list(UI_Scroll *sc, Rect list, F32 content_h);
 static void ui_scrollbar(UI_Scroll *sc, Rect list, F32 content_h);
 // Scrolls (smoothly) just enough that [top, bottom) of the content is inside a view view_h tall.
@@ -152,11 +219,13 @@ static void ui_scroll_reveal(UI_Scroll *sc, F32 top, F32 bottom, F32 view_h);
 
 // A list of `count` rows, each row_h tall, in r, scrolled by sc, with extra_h more content below
 // them (e.g. a "Loading more..." row). ui_list_begin scrolls (ui_scroll_list), clips to r and says
-// which rows are visible: draw rows first..last-1, at ui_list_row(&l, i). ui_list_end draws the
+// which rows are visible: draw rows first..last-1, at ui_list_row(&l, i, key). ui_list_end draws the
 // scrollbar. l.animating is 1 while it scrolls.
-typedef struct UI_List { UI_Scroll *sc; Rect r; F32 row_h, content_h; S64 first, last; B32 animating; } UI_List;
+typedef struct UI_List { UI_Scroll *sc; Rect r; F32 row_h, content_h; S64 first, last; B32 animating, scoped; } UI_List;
 static UI_List ui_list_begin(UI_Scroll *sc, Rect r, S64 count, F32 row_h, F32 extra_h);
-static Rect ui_list_row(UI_List *l, S64 i);  // where row i is (whole pixels)
+// Where row i is (whole pixels). It also starts the row's id scope, named key (what stays the same
+// when rows move, e.g. an addon id; empty: i), until the next row or ui_list_end.
+static Rect ui_list_row(UI_List *l, S64 i, String8 key);
 static void ui_list_end(UI_List *l);
 
 //- More widgets

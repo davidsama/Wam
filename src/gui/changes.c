@@ -130,7 +130,7 @@ static B32 draw_changes(void)
         f_draw_text(ui.font.caption, x, by + (bh - ui.font.caption->line_height) * 0.5f,
                     str8_lit("Pinned: updates leave it at its version. Unpin it to update."), C_FAINT, b.x0 - x - 16 * s);
     } else if (row->update) {
-        String8 label = row->edited ? str8_lit("Overwrite edits") : str8_lit("Update");
+        String8 label = row->edited ? str8_lit("Overwrite edits###update") : str8_lit("Update###update");
         Rect b = rect(bx - ui_button_width(label), by, bx, by + bh);
         if (ui_button(b, label, C_TEXT, row->edited ? ui_hex(0x6b4a12, 1) : C_ACCENT_BG, row->edited ? ui_hex(0x86601c, 1) : C_ACCENT)) {
             String8List one = { 0 };

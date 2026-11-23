@@ -38,6 +38,180 @@ static B32 ui_clicked(Rect r)
     return ui_mouse_in(r) && ui.in.released && point_in(r, ui.in.press_x, ui.in.press_y);
 }
 
+//- Identity, interaction, focus, animation
+
+static U64 ui_hash(U64 seed, String8 s)
+{
+    U64 h = seed ? seed : 14695981039346656037ull;
+    for (U64 i = 0; i < s.size; i += 1) { h ^= s.str[i]; h *= 1099511628211ull; }
+    return h ? h : 1;
+}
+
+static U64 ui_scope_seed(void) { return ui.scope_count ? ui.scope[Min(ui.scope_count, UI_SCOPE_MAX) - 1] : 0; }
+
+static String8 ui_label_text(String8 label) { return str8_prefix(label, str8_find(label, 0, str8_lit("##"), 0)); }
+
+static UI_Id ui_id(String8 label)
+{
+    U64 i = str8_find(label, 0, str8_lit("###"), 0);
+    if (i < label.size) label = str8_skip(label, i + 3);
+    UI_Id id = { ui_hash(ui_scope_seed(), label) };
+    return id;
+}
+
+static UI_Id ui_id_ptr(void *p)
+{
+    U64 v = (U64)(uintptr_t)p;
+    UI_Id id = { ui_hash(0x9e3779b97f4a7c15ull, str8((U8 *)&v, sizeof(v))) };
+    return id;
+}
+
+static B32 ui_id_match(UI_Id a, UI_Id b) { return a.v == b.v; }
+
+static void ui_scope_push(String8 key)
+{
+    U64 seed = ui_hash(ui_scope_seed() ^ 0x5c09e5ull, key);
+    if (ui.scope_count < UI_SCOPE_MAX) ui.scope[ui.scope_count] = seed;
+    ui.scope_count += 1; // (past the max, pushes and pops still balance)
+}
+
+static void ui_scope_push_u64(U64 key) { ui_scope_push(str8((U8 *)&key, sizeof(key))); }
+static void ui_scope_pop(void) { if (ui.scope_count) ui.scope_count -= 1; }
+
+static UI_Signal ui_signal(UI_Id id, Rect r, U32 flags)
+{
+    UI_Signal sg = { 0 };
+    sg.hovering = ui_mouse_in(r);
+    if (sg.hovering) ui.hot = id;
+    // A press inside r makes it active. (A widget that takes a press for itself, like a scrollbar,
+    // moves ui.in.press_x/y away so nothing else sees it.)
+    if (ui.in.pressed && sg.hovering && point_in(r, ui.in.press_x, ui.in.press_y)) { ui.active = id; sg.pressed = 1; }
+    B32 active = id.v && ui.active.v == id.v;
+    sg.dragging = active && ui.in.down;
+    sg.released = active && ui.in.released;
+    // Released where it was pressed. (Checking the press too keeps two widgets that happen to share
+    // an id from taking each other's clicks.)
+    sg.clicked = sg.released && sg.hovering && point_in(r, ui.in.press_x, ui.in.press_y);
+    if (flags & UI_FOCUSABLE) {
+        if (ui.focusable_count < UI_FOCUS_MAX) {
+            UI_Focusable f = { id, ui.in_overlay };
+            ui.focusables[ui.focusable_count++] = f;
+        }
+        sg.focused = id.v && ui.focus.v == id.v;
+        if (sg.focused) {
+            ui.focus_seen = 1;
+            if (ui.focus_activate) { ui.focus_activate = 0; sg.clicked = sg.keyboard = 1; }
+        }
+    }
+    return sg;
+}
+
+static B32 ui_is_active(UI_Id id) { return id.v && ui.active.v == id.v; }
+
+static void ui_focus_ring(UI_Id id, Rect r, F32 radius)
+{
+    if (!ui.focus_visible || !id.v || ui.focus.v != id.v) return;
+    F32 s = ui.scale, g = 3 * s;
+    r_rect(rect(r.x0 - g, r.y0 - g, r.x1 + g, r.y1 + g), ui.theme.accent_hi, radius + g, 1.5f * s, 0.5f);
+}
+
+// Tab / Shift+Tab: the next or previous focusable widget of the last frame (the overlay's only,
+// while one is up), wrapping around.
+static void ui_focus_step(int dir)
+{
+    UI_Focusable *f = ui.focusables_prev;
+    U32 n = ui.focusable_prev_count;
+    B32 overlay = 0;
+    for (U32 i = 0; i < n; i += 1) overlay |= f[i].in_overlay;
+    UI_Id order[UI_FOCUS_MAX];
+    S32 count = 0, cur = -1;
+    for (U32 i = 0; i < n; i += 1) {
+        if (overlay && !f[i].in_overlay) continue;
+        if (f[i].id.v == ui.focus.v) cur = count;
+        order[count++] = f[i].id;
+    }
+    if (!count) return;
+    S32 next = cur < 0 ? (dir > 0 ? 0 : count - 1) : (cur + dir + count) % count;
+    ui.focus = order[next];
+    ui.focus_visible = 1;
+}
+
+// The keys focus takes before the app sees them: Tab and Shift+Tab move it; with the focus shown,
+// Enter or Space clicks the focused widget and Esc lets go of it. Typing or a mouse press hides it.
+static void ui_focus_keys(void)
+{
+    if (ui.in.pressed) { ui.focus.v = 0; ui.focus_visible = 0; }
+    U32 kept = 0;
+    for (U32 i = 0; i < ui.event_count; i += 1) {
+        WM_Event e = ui.events[i];
+        B32 eat = 0;
+        if (e.kind == WM_EVENT_KEY) {
+            ui.eat_space_text = 0;
+            B32 shown = ui.focus.v && ui.focus_visible;
+            if (e.key == WM_KEY_TAB && !(e.mods & (WM_MOD_CTRL | WM_MOD_ALT))) {
+                ui_focus_step(e.mods & WM_MOD_SHIFT ? -1 : 1);
+                eat = 1;
+            } else if (shown && !e.mods && (e.key == WM_KEY_RETURN || e.key == WM_KEY_SPACE)) {
+                ui.focus_activate = 1;
+                ui.eat_space_text = e.key == WM_KEY_SPACE; // its ' ' comes next
+                eat = 1;
+            } else if (shown && e.key == WM_KEY_ESCAPE) {
+                ui.focus.v = 0;
+                eat = 1;
+            }
+        } else if (e.kind == WM_EVENT_TEXT) {
+            if (ui.eat_space_text && e.codepoint == ' ') { ui.eat_space_text = 0; eat = 1; }
+            else if (ui.focus_visible) { ui.focus.v = 0; ui.focus_visible = 0; }
+        }
+        if (!eat) ui.events[kept++] = e;
+    }
+    ui.event_count = kept;
+}
+
+static F32 ui_anim(UI_Id id, F32 target)
+{
+    if (!id.v) return target;
+    U64 h = id.v % UI_ANIM_SLOTS;
+    UI_AnimSlot *slot = 0, *spare = 0;
+    for (U32 k = 0; k < 8 && !slot; k += 1) {
+        UI_AnimSlot *c = &ui.anim[(h + k) % UI_ANIM_SLOTS];
+        if (c->id.v == id.v) slot = c;
+        else if (!spare && (!c->id.v || c->frame + 1 < ui.frame_index)) spare = c; // free, or not drawn since the last frame
+    }
+    if (slot && slot->frame + 1 < ui.frame_index) slot->value = target; // back after a while: start over
+    if (!slot) {
+        if (!spare) return target;
+        slot = spare;
+        slot->id = id;
+        slot->value = target;
+    }
+    slot->frame = ui.frame_index;
+    F32 d = target - slot->value;
+    if (fabsf(d) < 0.01f) slot->value = target;
+    else { slot->value += d * (1.0f - expf(-ui.dt * 25.0f)); wm_request_frame(); }
+    return slot->value;
+}
+
+// Around each frame (ui_frame).
+static void ui_ids_begin_frame(void)
+{
+    ui.frame_index += 1;
+    ui.scope_count = 0;
+    ui.hot.v = 0;
+    ui.focusable_count = 0;
+    ui.focus_seen = 0;
+    ui_focus_keys();
+}
+
+static void ui_ids_end_frame(void)
+{
+    if (!ui.in.down) ui.active.v = 0;
+    if (ui.focus.v && !ui.focus_seen) ui.focus.v = 0; // not drawn any more (a popup closed, a row scrolled away)
+    ui.focus_activate = 0;
+    memcpy(ui.focusables_prev, ui.focusables, ui.focusable_count * sizeof(UI_Focusable));
+    ui.focusable_prev_count = ui.focusable_count;
+}
+
 static UI_Theme ui_theme_dark(void)
 {
     UI_Theme t;
@@ -236,27 +410,34 @@ static void ui_pill(Rect r, String8 label, F_Font *f, V4 fg, V4 bg)
 
 static B32 ui_button(Rect r, String8 label, V4 fg, V4 bg, V4 bg_hot)
 {
-    B32 hot = ui_mouse_in(r) && ui_mouse_in(ui.clip);
-    ui_plate(r, hot ? bg_hot : bg, 6 * ui.scale);
-    ui_text_centered(ui.font.normal, r, label, fg);
-    return hot && ui.in.released && point_in(r, ui.in.press_x, ui.in.press_y);
+    UI_Id id = ui_id(label);
+    UI_Signal sg = ui_signal(id, r, UI_FOCUSABLE);
+    B32 in_clip = ui_mouse_in(ui.clip);
+    ui_plate(r, ui_mix(bg, bg_hot, ui_anim(id, (F32)(sg.hovering && in_clip))), 6 * ui.scale);
+    ui_text_centered(ui.font.normal, r, ui_label_text(label), fg);
+    ui_focus_ring(id, r, 6 * ui.scale);
+    return sg.clicked && (sg.keyboard || in_clip);
 }
 
-static F32 ui_button_width(String8 label) { return f_text_width(ui.font.normal, label) + 24 * ui.scale; }
+static F32 ui_button_width(String8 label) { return f_text_width(ui.font.normal, ui_label_text(label)) + 24 * ui.scale; }
 
-static B32 ui_checkbox(F32 x, F32 cy, B32 checked)
+static B32 ui_checkbox(String8 name, F32 x, F32 cy, B32 checked)
 {
     F32 s = ui.scale, sz = 16 * s;
     Rect b = rect(x, (F32)(int)(cy - sz * 0.5f), x + sz, (F32)(int)(cy - sz * 0.5f) + sz);
     Rect hit = rect(b.x0 - 6 * s, b.y0 - 6 * s, b.x1 + 6 * s, b.y1 + 6 * s); // easier to hit than it looks
-    B32 hot = ui_mouse_in(hit) && ui_mouse_in(ui.clip);
+    UI_Id id = ui_id(name);
+    UI_Signal sg = ui_signal(id, hit, UI_FOCUSABLE);
+    B32 in_clip = ui_mouse_in(ui.clip);
+    B32 hot = sg.hovering && in_clip;
     if (checked) {
         ui_plate(b, hot ? ui.theme.accent_hi : ui.theme.accent, 4 * s);
         ui_text_centered(ui.font.icon, b, str8_lit("\xE2\x9C\x93"), ui.theme.text); // U+2713 check mark
     } else {
         r_rect(b, hot ? ui.theme.faint : ui.theme.border_hi, 4 * s, 1.5f * s, 0.5f);
     }
-    return hot && ui.in.released && point_in(hit, ui.in.press_x, ui.in.press_y);
+    ui_focus_ring(id, b, 4 * s);
+    return sg.clicked && (sg.keyboard || in_clip);
 }
 
 static F32 ui_text_highlighted(F_Font *f, F32 x, F32 y, String8 text, U8 *marks, U32 mark_count, V4 base, V4 hi, F32 max_w)
@@ -351,12 +532,11 @@ static void ui_tooltip_draw(void)
     f_draw_text(f, r.x0 + pad, r.y0 + pad * 0.75f, ui.tip, ui.theme.text, 0);
 }
 
-static B32 ui_drag_handle(Rect zone, B32 *dragging)
+static UI_Signal ui_drag_handle(UI_Id id, Rect zone)
 {
-    if (ui.in.pressed && ui_mouse_in(zone) && point_in(zone, ui.in.press_x, ui.in.press_y)) *dragging = 1;
-    if (!ui.in.down) *dragging = 0;
-    if (*dragging || ui_mouse_in(zone)) ui.cursor = UI_CURSOR_SIZE_WE;
-    return *dragging;
+    UI_Signal sg = ui_signal(id, zone, 0);
+    if (sg.dragging || sg.hovering) ui.cursor = UI_CURSOR_SIZE_WE;
+    return sg;
 }
 
 // The scrollbar: a strip along the list's right edge, and the thumb in it (y0..y1 of the strip).
@@ -374,6 +554,7 @@ static Rect ui_scroll_thumb(UI_Scroll *sc, Rect list, F32 content_h)
 
 static B32 ui_scroll_list(UI_Scroll *sc, Rect list, F32 content_h)
 {
+    UI_Id id = ui_id_ptr(sc); // the scrollbar, while its thumb is dragged
     F32 view_h = list.y1 - list.y0;
     F32 max_scroll = Max(0, content_h - view_h);
     if (ui_mouse_in(list) && ui.in.wheel != 0) sc->target -= ui.in.wheel * 48 * ui.scale * 3;
@@ -391,18 +572,16 @@ static B32 ui_scroll_list(UI_Scroll *sc, Rect list, F32 content_h)
                 sc->pos = sc->target = t * max_scroll;
                 thumb = ui_scroll_thumb(sc, list, content_h);
             }
-            sc->dragging = 1;
-            sc->grab = ui.in.my - thumb.y0;
+            ui.active = id;
+            ui.drag_grab = ui.in.my - thumb.y0;
             ui.in.press_x = ui.in.press_y = -1e9f; // taken: no other widget gets this click
         }
-        if (sc->dragging && !ui.in.down) sc->dragging = 0;
-        if (sc->dragging && room > 0) {
-            F32 t = Clamp(0, (ui.in.my - sc->grab - list.y0) / room, 1);
+        B32 dragging = ui_is_active(id) && ui.in.down;
+        if (dragging && room > 0) {
+            F32 t = Clamp(0, (ui.in.my - ui.drag_grab - list.y0) / room, 1);
             sc->pos = sc->target = t * max_scroll;
         }
-        if (sc->dragging || ui_mouse_in(track)) ui_block_mouse(sc->dragging ? rect(-1e9f, -1e9f, 1e9f, 1e9f) : track);
-    } else {
-        sc->dragging = 0;
+        if (dragging || ui_mouse_in(track)) ui_block_mouse(dragging ? rect(-1e9f, -1e9f, 1e9f, 1e9f) : track);
     }
 
     sc->target = Clamp(0, sc->target, max_scroll);
@@ -420,10 +599,11 @@ static void ui_scrollbar(UI_Scroll *sc, Rect list, F32 content_h)
     Rect thumb = ui_scroll_thumb(sc, list, content_h);
     Rect track = ui_scroll_track(list);
     // Thin until the mouse comes near; wider and brighter while hovered or dragged.
-    B32 hot = sc->dragging || (ui.in.inside && point_in(track, ui.in.mx, ui.in.my));
+    B32 dragging = ui_is_active(ui_id_ptr(sc)) && ui.in.down;
+    B32 hot = dragging || (ui.in.inside && point_in(track, ui.in.mx, ui.in.my));
     F32 w = hot ? 8 * s : 4 * s, x1 = list.x1 - 4 * s;
     if (hot) r_rect(rect(x1 - w, list.y0 + 2 * s, x1, list.y1 - 2 * s), ui_hex(0xffffff, 0.04f), w * 0.5f, 0, 0.5f);
-    r_rect(rect(x1 - w, thumb.y0 + 2 * s, x1, thumb.y1 - 2 * s), sc->dragging ? ui.theme.dim : hot ? ui.theme.dim : ui.theme.faint, w * 0.5f, 0, 0.5f);
+    r_rect(rect(x1 - w, thumb.y0 + 2 * s, x1, thumb.y1 - 2 * s), hot ? ui.theme.dim : ui.theme.faint, w * 0.5f, 0, 0.5f);
 }
 
 //- Overlay
@@ -544,6 +724,9 @@ static B32 ui_frame(WM_Frame *f, B32 (*build)(void))
 {
     if (!r_state) return 0; // (ui_init hasn't run)
     U64 t0 = os_now_us();
+    static U64 last_us;
+    ui.dt = last_us ? Min((F32)(t0 - last_us) / 1e6f, 1.0f / 30) : 1.0f / 60;
+    last_us = t0;
     arena_clear(ui.frame_arena);
     if (f->scale != ui.scale) { ui.scale = f->scale; ui_fonts_load(); }
     r_resize((U32)f->width, (U32)f->height);
@@ -553,6 +736,7 @@ static B32 ui_frame(WM_Frame *f, B32 (*build)(void))
     ui.events = f->events;
     ui.event_count = f->event_count;
     ui_take_shot_keys();
+    ui_ids_begin_frame(); // (the focus takes its keys here)
     ui.clip = rect(0, 0, ui.width, ui.height);
     ui.overlay_on = ui.in_overlay = 0;
     ui.block_count = 0;
@@ -561,6 +745,7 @@ static B32 ui_frame(WM_Frame *f, B32 (*build)(void))
     r_begin_frame();
     ui.tip = str8(0, 0);
     B32 again = build();
+    ui_ids_end_frame();
     ui_tooltip_draw();
     wm_caption_overlay(ui.overlay, ui.overlay_on);
     wm_set_cursor(ui.cursor);
@@ -638,48 +823,64 @@ static UI_List ui_list_begin(UI_Scroll *sc, Rect r, S64 count, F32 row_h, F32 ex
     return l;
 }
 
-static Rect ui_list_row(UI_List *l, S64 i)
+static Rect ui_list_row(UI_List *l, S64 i, String8 key)
 {
+    if (l->scoped) ui_scope_pop();
+    if (key.size) ui_scope_push(key);
+    else ui_scope_push_u64((U64)i);
+    l->scoped = 1;
     F32 y = (F32)(int)(l->r.y0 + (F32)i * l->row_h - l->sc->pos);
     return rect(l->r.x0, y, l->r.x1, y + l->row_h);
 }
 
-static void ui_list_end(UI_List *l) { ui_scrollbar(l->sc, l->r, l->content_h); }
+static void ui_list_end(UI_List *l)
+{
+    if (l->scoped) { ui_scope_pop(); l->scoped = 0; }
+    ui_scrollbar(l->sc, l->r, l->content_h);
+}
 
 //- More widgets
 
 static B32 ui_small_button(Rect r, String8 label, V4 bg, V4 bg_hot)
 {
-    B32 hot = ui_mouse_in(r);
-    ui_plate(r, hot ? bg_hot : bg, 5 * ui.scale);
-    ui_text_centered(ui.font.caption, r, label, ui.theme.text);
-    return ui_clicked(r);
+    UI_Id id = ui_id(label);
+    UI_Signal sg = ui_signal(id, r, UI_FOCUSABLE);
+    ui_plate(r, ui_mix(bg, bg_hot, ui_anim(id, (F32)sg.hovering)), 5 * ui.scale);
+    ui_text_centered(ui.font.caption, r, ui_label_text(label), ui.theme.text);
+    ui_focus_ring(id, r, 5 * ui.scale);
+    return sg.clicked;
 }
 
-static F32 ui_small_button_width(String8 label) { return f_text_width(ui.font.caption, label) + 20 * ui.scale; }
+static F32 ui_small_button_width(String8 label) { return f_text_width(ui.font.caption, ui_label_text(label)) + 20 * ui.scale; }
 
 static B32 ui_glass_button(Rect r, String8 label, F_Font *f)
 {
-    B32 hot = ui_mouse_in(r);
-    r_rect(r, ui_hex(0xffffff, hot ? 0.18f : 0.08f), (r.y1 - r.y0) * 0.5f, 0, 0.5f);
-    ui_text_centered(f, r, label, ui_hex(0xffffff, hot ? 1.0f : 0.8f));
-    return ui_clicked(r);
+    UI_Id id = ui_id(label);
+    UI_Signal sg = ui_signal(id, r, UI_FOCUSABLE);
+    F32 t = ui_anim(id, (F32)sg.hovering), radius = (r.y1 - r.y0) * 0.5f;
+    r_rect(r, ui_hex(0xffffff, 0.08f + 0.10f * t), radius, 0, 0.5f);
+    ui_text_centered(f, r, ui_label_text(label), ui_hex(0xffffff, 0.8f + 0.2f * t));
+    ui_focus_ring(id, r, radius);
+    return sg.clicked;
 }
 
 static F32 ui_tab_badge_width(String8 badge) { return badge.size ? f_text_width(ui.font.caption, badge) + 14 * ui.scale : 0; }
 
 static F32 ui_tab_width(String8 label, String8 badge)
 {
-    return f_text_width(ui.font.normal, label) + 28 * ui.scale + (badge.size ? ui_tab_badge_width(badge) + 8 * ui.scale : 0);
+    return f_text_width(ui.font.normal, ui_label_text(label)) + 28 * ui.scale + (badge.size ? ui_tab_badge_width(badge) + 8 * ui.scale : 0);
 }
 
 static B32 ui_tab(Rect r, String8 label, String8 badge, B32 active)
 {
     F32 s = ui.scale;
-    B32 hot = ui_mouse_in(r);
+    UI_Id id = ui_id(label);
+    UI_Signal sg = ui_signal(id, r, UI_FOCUSABLE);
+    F32 t = ui_anim(id, (F32)sg.hovering);
+    label = ui_label_text(label);
     if (active) ui_plate(r, ui.theme.button_hi, 6 * s);
-    else if (hot) r_rect(r, ui.theme.hover, 6 * s, 0, 0.5f);
-    V4 fg = active || hot ? ui.theme.text : ui.theme.dim;
+    else if (t > 0) { V4 c = ui.theme.hover; c.w *= t; r_rect(r, c, 6 * s, 0, 0.5f); }
+    V4 fg = active ? ui.theme.text : ui_mix(ui.theme.dim, ui.theme.text, t);
     if (badge.size) {
         F32 lx = r.x0 + 14 * s;
         f_draw_text(ui.font.normal, lx, (r.y0 + r.y1 - ui.font.normal->line_height) * 0.5f, label, fg, 0);
@@ -688,17 +889,22 @@ static B32 ui_tab(Rect r, String8 label, String8 badge, B32 active)
     } else {
         ui_text_centered(ui.font.normal, r, label, fg);
     }
-    return ui_clicked(r);
+    ui_focus_ring(id, r, 6 * s);
+    return sg.clicked;
 }
 
-static F32 ui_pill_tab_width(String8 label) { return f_text_width(ui.font.normal, label) + 26 * ui.scale; }
+static F32 ui_pill_tab_width(String8 label) { return f_text_width(ui.font.normal, ui_label_text(label)) + 26 * ui.scale; }
 
 static B32 ui_pill_tab(Rect r, String8 label, B32 active)
 {
-    B32 hot = ui_mouse_in(r);
-    if (active) { ui_plate(r, ui.theme.accent_bg, (r.y1 - r.y0) * 0.5f); ui_text_centered(ui.font.normal, r, label, ui.theme.text); }
-    else ui_pill(r, label, ui.font.normal, hot ? ui.theme.text : ui.theme.dim, hot ? ui.theme.hover : ui_hex(0, 0));
-    return !active && ui_clicked(r);
+    UI_Id id = ui_id(label);
+    UI_Signal sg = ui_signal(id, r, UI_FOCUSABLE);
+    F32 t = ui_anim(id, (F32)sg.hovering), radius = (r.y1 - r.y0) * 0.5f;
+    label = ui_label_text(label);
+    if (active) { ui_plate(r, ui.theme.accent_bg, radius); ui_text_centered(ui.font.normal, r, label, ui.theme.text); }
+    else { V4 bg = ui.theme.hover; bg.w *= t; ui_pill(r, label, ui.font.normal, ui_mix(ui.theme.dim, ui.theme.text, t), bg); }
+    ui_focus_ring(id, r, radius);
+    return !active && sg.clicked;
 }
 
 static F32 ui_link_text(F_Font *f, F32 x, F32 y, String8 text, V4 color, F32 max_w, Rect *hit)
@@ -745,10 +951,13 @@ static B32 ui_modal_close_button(Rect panel)
 {
     F32 s = ui.scale;
     Rect cb = rect(panel.x1 - 12 * s - 32 * s, panel.y0 + 12 * s, panel.x1 - 12 * s, panel.y0 + 44 * s);
-    B32 hot = ui_mouse_in(cb);
-    if (hot) r_rect(cb, ui.theme.hover, 6 * s, 0, 0.5f);
-    ui_text_centered(ui.font.glyphs, cb, str8_lit("\xEE\xA2\xBB"), hot ? ui.theme.text : ui.theme.dim); // ChromeClose
-    return ui_clicked(cb);
+    UI_Id id = ui_id(str8_lit("modal close"));
+    UI_Signal sg = ui_signal(id, cb, UI_FOCUSABLE);
+    F32 t = ui_anim(id, (F32)sg.hovering);
+    if (t > 0) { V4 c = ui.theme.hover; c.w *= t; r_rect(cb, c, 6 * s, 0, 0.5f); }
+    ui_text_centered(ui.font.glyphs, cb, str8_lit("\xEE\xA2\xBB"), ui_mix(ui.theme.dim, ui.theme.text, t)); // ChromeClose
+    ui_focus_ring(id, cb, 6 * s);
+    return sg.clicked;
 }
 
 static B32 ui_modal_end(Rect panel)

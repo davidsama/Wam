@@ -241,7 +241,6 @@ typedef struct App {
     U32 viewer_count, viewer_index;
     B32 viewer_fresh;          // opened this frame (by a click the viewer mustn't see)
     F32 detail_share;          // the panel's share of the view's width (dragged; saved in settings.json), 0 = default
-    B32 detail_dragging;       // the divider between the list and the panel is being dragged
     F32 detail_content_h;      // the panel's content height last frame
     // Paging: scrolling near the end asks CurseForge for the next page of this sort + query.
     char more_query[256]; int more_sort; U64 more_index; B32 more_done; U32 more_asked;
