@@ -69,12 +69,12 @@ static B32 draw_changes(void)
 
     F32 head_h = 92 * s, foot_h = 64 * s;
     F32 want_h = head_h + foot_h + (c && changes_content_h > 0 ? changes_content_h : 260 * s);
-    Rect panel = modal_begin(700 * s, Min(want_h, 720 * s), &app.changes_fresh);
+    Rect panel = ui_modal_begin(700 * s, Min(want_h, 720 * s), &app.changes_fresh);
     F32 pad = 24 * s, x = panel.x0 + pad, w = (panel.x1 - panel.x0) - 2 * pad, y = panel.y0 + 18 * s;
 
     // Head: the addon, and from which version to which.
     f_draw_text(ui.font.title, x, y, row->title, ui.theme.heading, w - 40 * s);
-    B32 close = modal_close_button(panel);
+    B32 close = ui_modal_close_button(panel);
     y += ui.font.title->line_height + 8 * s;
     String8 to = c && c->ok && c->to.size ? c->to : row->latest;
     String8 line = str8_pushf(fa, "Installed %.*s  \xE2\x86\x92  %.*s%s", S8F(row->version), S8F(to), row->pinned ? "  \xC2\xB7  pinned" : "");
@@ -144,6 +144,6 @@ static B32 draw_changes(void)
         f_draw_text(ui.font.caption, x, by + (bh - ui.font.caption->line_height) * 0.5f, str8_lit("Up to date."), C_GREEN, w);
     }
 
-    if (modal_end(panel) || close) changes_close();
+    if (ui_modal_end(panel) || close) changes_close();
     return animating;
 }

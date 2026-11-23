@@ -33,6 +33,25 @@ static int failures, checks;
 
 #define CHECK(cond) do { checks += 1; if (!(cond)) { failures += 1; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
 
+static void test_readable(Arena *a)
+{
+    CHECK(str8_match(str8_count_short(a, 999), str8_lit("999"), 0));
+    CHECK(str8_match(str8_count_short(a, 12345), str8_lit("12K"), 0));
+    CHECK(str8_match(str8_count_short(a, 1234567), str8_lit("1.2M"), 0));
+    CHECK(str8_match(str8_thousands(a, 0), str8_lit("0"), 0));
+    CHECK(str8_match(str8_thousands(a, 999), str8_lit("999"), 0));
+    CHECK(str8_match(str8_thousands(a, 12345), str8_lit("12,345"), 0));
+    CHECK(str8_match(str8_thousands(a, 1234567), str8_lit("1,234,567"), 0));
+    CHECK(str8_match(str8_thousands(a, -1234), str8_lit("-1,234"), 0));
+    CHECK(str8_match(str8_ago(a, 30), str8_lit("just now"), 0));
+    CHECK(str8_match(str8_ago(a, 5 * 60), str8_lit("5 min ago"), 0));
+    CHECK(str8_match(str8_ago(a, 3 * 3600), str8_lit("3 h ago"), 0));
+    CHECK(str8_match(str8_ago(a, 86400 + 10), str8_lit("yesterday"), 0));
+    CHECK(str8_match(str8_ago(a, 10 * 86400), str8_lit("10 days ago"), 0));
+    CHECK(str8_match(str8_ago(a, 90 * 86400), str8_lit("3 months ago"), 0));
+    CHECK(str8_match(str8_ago(a, 800 * 86400), str8_lit("2 years ago"), 0));
+}
+
 static void test_json(Arena *a)
 {
     String8 text = str8_lit("{\"a\": 1, \"s\": \"x\\\"y\\\\z\\n\\u00e9\\ud83d\\ude00\", \"arr\": [1, 2.5, -3, true, false, null],"
@@ -677,6 +696,7 @@ int main(void)
 {
     Arena *a = arena_alloc(GB(1));
     test_json(a);
+    test_readable(a);
     test_pick(a);
     test_specs(a);
     test_deps();

@@ -130,7 +130,8 @@ static B32  ui_loading_bar(Rect r);
 // Word-wrapped paragraphs ('\n' ends a line; "• " lines hang-indent). Draws only the lines inside
 // [vis_y0, vis_y1); returns the total height.
 static F32  ui_text_wrapped(F_Font *f, F32 x, F32 y, F32 w, String8 text, V4 color, F32 vis_y0, F32 vis_y1);
-// Pictures from URLs: see ui_image.c (ui_image(), ui_image_fetch).
+// Pictures from URLs: see ui_image.c (ui_image(), ui_image_fetch). ui_avatar there draws a picture,
+// or until (unless) it loads, the name's initial on a colored square.
 
 // A handle to drag (e.g. a divider between panes): true while it's being dragged, with the mouse at
 // ui.in.mx / my. Shows the left-right resize pointer while hovered or dragged. *dragging is its state.
@@ -146,6 +147,51 @@ static void ui_tooltip(Rect anchor, String8 text);
 typedef struct UI_Scroll { F32 pos, target; B32 dragging; F32 grab; } UI_Scroll;
 static B32  ui_scroll_list(UI_Scroll *sc, Rect list, F32 content_h);
 static void ui_scrollbar(UI_Scroll *sc, Rect list, F32 content_h);
+// Scrolls (smoothly) just enough that [top, bottom) of the content is inside a view view_h tall.
+static void ui_scroll_reveal(UI_Scroll *sc, F32 top, F32 bottom, F32 view_h);
+
+// A list of `count` rows, each row_h tall, in r, scrolled by sc, with extra_h more content below
+// them (e.g. a "Loading more..." row). ui_list_begin scrolls (ui_scroll_list), clips to r and says
+// which rows are visible: draw rows first..last-1, at ui_list_row(&l, i). ui_list_end draws the
+// scrollbar. l.animating is 1 while it scrolls.
+typedef struct UI_List { UI_Scroll *sc; Rect r; F32 row_h, content_h; S64 first, last; B32 animating; } UI_List;
+static UI_List ui_list_begin(UI_Scroll *sc, Rect r, S64 count, F32 row_h, F32 extra_h);
+static Rect ui_list_row(UI_List *l, S64 i);  // where row i is (whole pixels)
+static void ui_list_end(UI_List *l);
+
+//- More widgets
+
+// A plate button in the caption font (smaller than ui_button, e.g. in a status bar); true when clicked.
+static B32  ui_small_button(Rect r, String8 label, V4 bg, V4 bg_hot);
+static F32  ui_small_button_width(String8 label);
+// A translucent white pill or circle (fully rounded) with a label or symbol, for use over a dark
+// backdrop such as a picture viewer; true when clicked.
+static B32  ui_glass_button(Rect r, String8 label, F_Font *f);
+// A tab: plate when active, a hover fill otherwise, with an optional badge after the label (a count
+// on the theme's ok color). True when clicked.
+static B32  ui_tab(Rect r, String8 label, String8 badge, B32 active);
+static F32  ui_tab_width(String8 label, String8 badge);
+// A fully rounded tab (e.g. in a title bar): accent plate when active. True when an inactive one is clicked.
+static B32  ui_pill_tab(Rect r, String8 label, B32 active);
+static F32  ui_pill_tab_width(String8 label);
+// Text that's a link: underlined, with a hand pointer, while hovered (inside ui.clip). Draws it at
+// (x, y), at most max_w wide; returns the x after it. *hit gets the area that takes the click (a
+// little bigger than the text): check ui_clicked(*hit).
+static F32  ui_link_text(F_Font *f, F32 x, F32 y, String8 text, V4 color, F32 max_w, Rect *hit);
+// "Installing..." and the like: a turning cog and text, ending at `right`, centered on cy.
+// Returns 1 (keeps frames coming).
+static B32  ui_busy_label(F32 right, F32 cy, String8 text);
+
+//- Popups: a panel in the middle of the window over a dimmed backdrop
+//
+// Between ui_modal_begin and ui_modal_end everything draws in the overlay, clipped to the panel, and
+// nothing under it sees the mouse (set the overlay to the whole window before drawing what's under
+// it: ui_overlay_set). The panel is w x h at most (smaller in a small window). *fresh: it opened this
+// frame, by a click the popup mustn't see (it's cleared). ui_modal_end returns 1 when a click beside
+// the panel (pressed and released there) should close it.
+static Rect ui_modal_begin(F32 w, F32 h, B32 *fresh);
+static B32  ui_modal_close_button(Rect panel);    // the ✕ in its top-right corner; true when clicked
+static B32  ui_modal_end(Rect panel);
 
 //- Overlay (dropdowns, popups drawn on top)
 //

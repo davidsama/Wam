@@ -101,7 +101,6 @@ static B32 app_frame(void)
     Arena *fa = ui.frame_arena;
     F32 s = ui.scale;
     F32 W = ui.width, H = ui.height;
-    WM_Input *in = &ui.in;
     // Keys and typing since the last frame first, so this frame shows what they did.
     for (U32 i = 0; i < ui.event_count; i += 1) app_event(&ui.events[i]);
     Snapshot *snap = app.snap;
@@ -120,7 +119,7 @@ static B32 app_frame(void)
     // stays), then the game version, and then the install button shrinks to a folder icon.
     F32 tabs_w = 0;
     for (int f = 0; f < FLAVOR_COUNT; f += 1) {
-        if (app.flavor_exists[f]) tabs_w += f_text_width(ui.font.normal, str8_cstring(wow_flavors[f].label)) + 32 * s;
+        if (app.flavor_exists[f]) tabs_w += ui_pill_tab_width(str8_cstring(wow_flavors[f].label)) + 6 * s;
     }
     String8 title = str8_lit("WoW Addons");
     String8 gv = snap && snap->client.valid ? str8_pushf(fa, "game %u.%u.%u", snap->client.major, snap->client.minor, snap->client.patch) : str8(0, 0);
@@ -134,7 +133,7 @@ static B32 app_frame(void)
         wm_caption_hole(b);
         ui_plate(b, hot ? C_BUTTON_HI : C_BUTTON, 6 * s);
         ui_cog((b.x0 + b.x1) * 0.5f, (b.y0 + b.y1) * 0.5f, 8 * s, hot ? 0.26f : 0, hot ? C_TEXT : C_DIM); // turns a little on hover
-        if (hot && in->released && point_in(b, in->press_x, in->press_y)) settings_open();
+        if (ui_clicked(b)) settings_open();
         hright = b.x0 - 8 * s;
     }
     F32 logo = 32 * s, title_w = f_text_width(ui.font.title, title) + 24 * s;
@@ -154,13 +153,10 @@ static B32 app_frame(void)
     for (int f = 0; f < FLAVOR_COUNT; f += 1) {
         if (!app.flavor_exists[f]) continue;
         String8 label = str8_cstring(wow_flavors[f].label);
-        F32 bw = f_text_width(ui.font.normal, label) + 26 * s, bh = 28 * s;
+        F32 bw = ui_pill_tab_width(label), bh = 28 * s;
         Rect b = rect(x, (header_h - bh) * 0.5f, x + bw, (header_h + bh) * 0.5f);
-        B32 active = f == app.flavor, hot = ui_mouse_in(b);
         wm_caption_hole(b);
-        if (active) { ui_plate(b, C_ACCENT_BG, bh * 0.5f); ui_text_centered(ui.font.normal, b, label, C_TEXT); }
-        else ui_pill(b, label, ui.font.normal, hot ? C_TEXT : C_DIM, hot ? C_HOVER : ui_hex(0, 0));
-        if (hot && in->released && point_in(b, in->press_x, in->press_y) && !active) switch_flavor(f);
+        if (ui_pill_tab(b, label, f == app.flavor)) switch_flavor(f);
         x = b.x1 + 6 * s;
     }
     if (show_gv) {
@@ -185,7 +181,7 @@ static B32 app_frame(void)
                         app.wow_root.size ? C_DIM : C_TEXT, bw - 24 * s);
         }
         app.root_btn = b;
-        if (hot && in->released && point_in(b, in->press_x, in->press_y)) wm_defer(show_root_menu);
+        if (ui_clicked(b)) wm_defer(show_root_menu);
     }
 
     ui_divider(0, W, header_h);
@@ -209,21 +205,8 @@ static B32 app_frame(void)
                       : dl_waiting && !dl_new ? str8_pushf(fa, "Downloads  %llu", dl_waiting) : str8_lit("Downloads");
         // New archives in the download folder: a bright "N new" badge on the tab until they're installed.
         String8 badge = v == VIEW_DOWNLOADS && dl_new ? str8_pushf(fa, "%llu new", dl_new) : str8(0, 0);
-        F32 badge_w = badge.size ? f_text_width(ui.font.caption, badge) + 14 * s : 0;
-        F32 bw = f_text_width(ui.font.normal, label) + 28 * s + (badge.size ? badge_w + 8 * s : 0);
-        Rect b = rect(x, ty, x + bw, ty + th);
-        B32 active = app.view == (View)v, hot = ui_mouse_in(b);
-        if (active) ui_plate(b, C_BUTTON_HI, 6 * s);
-        else if (hot) r_rect(b, C_HOVER, 6 * s, 0, 0.5f);
-        if (badge.size) {
-            F32 lx = b.x0 + 14 * s;
-            f_draw_text(ui.font.normal, lx, (b.y0 + b.y1 - ui.font.normal->line_height) * 0.5f, label, active || hot ? C_TEXT : C_DIM, 0);
-            F32 bx = lx + f_text_width(ui.font.normal, label) + 8 * s, bh2 = ui.font.caption->line_height + 4 * s;
-            ui_pill(rect(bx, (b.y0 + b.y1 - bh2) * 0.5f, bx + badge_w, (b.y0 + b.y1 + bh2) * 0.5f), badge, ui.font.caption, ui_hex(0x0e1014, 1), C_GREEN);
-        } else {
-            ui_text_centered(ui.font.normal, b, label, active || hot ? C_TEXT : C_DIM);
-        }
-        if (hot && in->released && point_in(b, in->press_x, in->press_y)) app.view = (View)v;
+        Rect b = rect(x, ty, x + ui_tab_width(label, badge), ty + th);
+        if (ui_tab(b, label, badge, app.view == (View)v)) app.view = (View)v;
         x = b.x1 + 4 * s;
     }
     if (app.view == VIEW_INSTALLED && app.selected.count && snap) {
@@ -351,28 +334,20 @@ static B32 app_frame(void)
     if (app.offer_count) {
         // Several addons only CurseForge's pages may serve (e.g. after Update all): open them on request.
         String8 label = str8_pushf(fa, "Get %u from CurseForge", app.offer_count);
-        F32 bw = f_text_width(ui.font.caption, label) + 20 * s, bh = 22 * s;
+        F32 bw = ui_small_button_width(label), bh = 22 * s;
         F32 by = H - status_h + (status_h - bh) * 0.5f;
         Rect b = rect(right - bw, by, right, by + bh);
-        B32 hot = ui_mouse_in(b);
-        ui_plate(b, hot ? C_ACCENT : C_ACCENT_BG, 5 * s);
-        ui_text_centered(ui.font.caption, b, label, C_TEXT);
-        if (hot && in->released && point_in(b, in->press_x, in->press_y)) waiting_open_all();
+        if (ui_small_button(b, label, C_ACCENT_BG, C_ACCENT)) waiting_open_all();
         right = b.x0 - 12 * s;
         url = str8(0, 0); // this replaces the single "Open download page"
     }
     if (url.size) {
         // The failed addon can only be downloaded by hand: offer its page.
         String8 label = str8_lit("Open download page");
-        F32 bw = f_text_width(ui.font.caption, label) + 20 * s, bh = 22 * s;
+        F32 bw = ui_small_button_width(label), bh = 22 * s;
         F32 by = H - status_h + (status_h - bh) * 0.5f;
         Rect b = rect(right - bw, by, right, by + bh);
-        B32 hot = ui_mouse_in(b);
-        ui_plate(b, hot ? C_ACCENT : C_ACCENT_BG, 5 * s);
-        ui_text_centered(ui.font.caption, b, label, C_TEXT);
-        if (hot && in->released && point_in(b, in->press_x, in->press_y)) {
-            os_open_url(url);
-        }
+        if (ui_small_button(b, label, C_ACCENT_BG, C_ACCENT)) os_open_url(url);
         right = b.x0 - 12 * s;
     }
     f_draw_text(ui.font.caption, left, sy, status, is_error ? C_ERROR : C_DIM, right - left);

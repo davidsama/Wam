@@ -5,54 +5,6 @@
 
 static void browse_for_root(void); // frame.c
 
-//- Popups: a panel in the middle of the window over a dimmed backdrop (settings, changes)
-//
-// Between modal_begin and modal_end everything draws in the overlay, clipped to the panel, and
-// nothing under it sees the mouse (the frame set the overlay to the whole window).
-
-// The panel, pw x ph at most (smaller in a small window). *fresh: opened this frame, by a click
-// the popup mustn't see (it's cleared).
-static Rect modal_begin(F32 pw, F32 ph, B32 *fresh)
-{
-    F32 s = ui.scale, W = ui.width, H = ui.height;
-    if (*fresh) { *fresh = 0; ui.in.released = 0; }
-    ui_overlay_begin();
-    r_rect(rect(0, 0, W, H), ui_hex(0x05070a, 0.72f), 0, 0, 0);
-    pw = Min(pw, W - 48 * s);
-    ph = Min(ph, H - 48 * s);
-    Rect panel = rect((F32)(int)((W - pw) * 0.5f), (F32)(int)((H - ph) * 0.5f), 0, 0);
-    panel.x1 = panel.x0 + pw;
-    panel.y1 = panel.y0 + ph;
-    r_rect(rect(panel.x0 - 2 * s, panel.y0 + 6 * s, panel.x1 + 2 * s, panel.y1 + 14 * s), ui_hex(0x000000, 0.5f), 12 * s, 0, 14 * s); // shadow
-    ui_panel(panel, 8 * s);
-    ui.clip = panel;
-    r_set_clip(panel);
-    return panel;
-}
-
-// The ✕ in the panel's top-right corner; true when clicked.
-static B32 modal_close_button(Rect panel)
-{
-    F32 s = ui.scale;
-    Rect cb = rect(panel.x1 - 12 * s - 32 * s, panel.y0 + 12 * s, panel.x1 - 12 * s, panel.y0 + 44 * s);
-    B32 hot = ui_mouse_in(cb);
-    if (hot) r_rect(cb, C_HOVER, 6 * s, 0, 0.5f);
-    ui_text_centered(ui.font.glyphs, cb, str8_lit("\xEE\xA2\xBB"), hot ? C_TEXT : C_DIM);
-    return ui_clicked(cb);
-}
-
-// Ends the popup; true when a click beside the panel (pressed and released there) should close it.
-static B32 modal_end(Rect panel)
-{
-    F32 W = ui.width, H = ui.height;
-    r_set_clip(rect(0, 0, W, H));
-    ui.clip = rect(0, 0, W, H);
-    ui_panel_rim(panel, 8 * ui.scale);
-    B32 outside = ui.in.released && !point_in(panel, ui.in.press_x, ui.in.press_y) && !point_in(panel, ui.in.mx, ui.in.my);
-    ui_overlay_end();
-    return outside;
-}
-
 static void settings_open(void)
 {
     app.settings_open = 1;
@@ -131,12 +83,12 @@ static void draw_settings(void)
 {
     F32 s = ui.scale;
     Arena *fa = ui.frame_arena;
-    Rect panel = modal_begin(580 * s, app.settings_h > 0 ? app.settings_h : 480 * s, &app.settings_fresh);
+    Rect panel = ui_modal_begin(580 * s, app.settings_h > 0 ? app.settings_h : 480 * s, &app.settings_fresh);
     F32 pad = 24 * s, x = panel.x0 + pad, w = (panel.x1 - panel.x0) - 2 * pad, y = panel.y0 + 18 * s;
 
     // Title and close
     f_draw_text(ui.font.title, x, y, str8_lit("Settings"), ui.theme.heading, 0);
-    B32 close = modal_close_button(panel);
+    B32 close = ui_modal_close_button(panel);
     y += ui.font.title->line_height + 16 * s;
 
     //- Wago
@@ -214,5 +166,5 @@ static void draw_settings(void)
     }
     y += 24 * s;
     app.settings_h = y - panel.y0; // the next frame sizes the panel to it
-    if (modal_end(panel) || close) settings_close();
+    if (ui_modal_end(panel) || close) settings_close();
 }

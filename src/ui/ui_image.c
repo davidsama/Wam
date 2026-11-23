@@ -270,3 +270,17 @@ static void ui_image_request(UI_ImageSlot *victim, U32 index, U64 key, int kind,
     os_mutex_unlock(&ui_img.lock);
     os_semaphore_signal(ui_img.sem);
 }
+
+// A picture, or the first letter of name on bg (in fg) until (or unless) one loads.
+static void ui_avatar(Rect r, String8 url, String8 name, V4 fg, V4 bg, F32 radius)
+{
+    if (url.size && ui_image(r, url, UI_IMG_ICON, radius, ui_hex(0xffffff, 1))) return;
+    r_rect(r, bg, radius, 0, 0.5f);
+    name = str8_trim(name);
+    U64 n = 1;
+    while (n < name.size && (name.str[n] & 0xC0) == 0x80) n += 1;
+    U8 letter[8] = { 0 };
+    memcpy(letter, name.str, Min(n, 7));
+    if (letter[0] >= 'a' && letter[0] <= 'z') letter[0] -= 32;
+    ui_text_centered((r.y1 - r.y0) > 44 * ui.scale ? ui.font.title : ui.font.bold, r, str8(letter, name.size ? Min(n, 7) : 0), fg);
+}

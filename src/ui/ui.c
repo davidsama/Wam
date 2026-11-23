@@ -614,3 +614,150 @@ static F32 ui_window_buttons(F32 right, F32 h)
     }
     return x;
 }
+
+//- Lists
+
+static void ui_scroll_reveal(UI_Scroll *sc, F32 top, F32 bottom, F32 view_h)
+{
+    if (top < sc->target) sc->target = top;
+    else if (bottom > sc->target + view_h) sc->target = bottom - view_h;
+}
+
+static UI_List ui_list_begin(UI_Scroll *sc, Rect r, S64 count, F32 row_h, F32 extra_h)
+{
+    UI_List l = { 0 };
+    l.sc = sc;
+    l.r = r;
+    l.row_h = row_h;
+    l.content_h = (F32)count * row_h + extra_h;
+    l.animating = ui_scroll_list(sc, r, l.content_h);
+    ui.clip = r;
+    r_set_clip(r);
+    l.first = (S64)(sc->pos / row_h);
+    l.last = Min(count, l.first + (S64)((r.y1 - r.y0) / row_h) + 2);
+    return l;
+}
+
+static Rect ui_list_row(UI_List *l, S64 i)
+{
+    F32 y = (F32)(int)(l->r.y0 + (F32)i * l->row_h - l->sc->pos);
+    return rect(l->r.x0, y, l->r.x1, y + l->row_h);
+}
+
+static void ui_list_end(UI_List *l) { ui_scrollbar(l->sc, l->r, l->content_h); }
+
+//- More widgets
+
+static B32 ui_small_button(Rect r, String8 label, V4 bg, V4 bg_hot)
+{
+    B32 hot = ui_mouse_in(r);
+    ui_plate(r, hot ? bg_hot : bg, 5 * ui.scale);
+    ui_text_centered(ui.font.caption, r, label, ui.theme.text);
+    return ui_clicked(r);
+}
+
+static F32 ui_small_button_width(String8 label) { return f_text_width(ui.font.caption, label) + 20 * ui.scale; }
+
+static B32 ui_glass_button(Rect r, String8 label, F_Font *f)
+{
+    B32 hot = ui_mouse_in(r);
+    r_rect(r, ui_hex(0xffffff, hot ? 0.18f : 0.08f), (r.y1 - r.y0) * 0.5f, 0, 0.5f);
+    ui_text_centered(f, r, label, ui_hex(0xffffff, hot ? 1.0f : 0.8f));
+    return ui_clicked(r);
+}
+
+static F32 ui_tab_badge_width(String8 badge) { return badge.size ? f_text_width(ui.font.caption, badge) + 14 * ui.scale : 0; }
+
+static F32 ui_tab_width(String8 label, String8 badge)
+{
+    return f_text_width(ui.font.normal, label) + 28 * ui.scale + (badge.size ? ui_tab_badge_width(badge) + 8 * ui.scale : 0);
+}
+
+static B32 ui_tab(Rect r, String8 label, String8 badge, B32 active)
+{
+    F32 s = ui.scale;
+    B32 hot = ui_mouse_in(r);
+    if (active) ui_plate(r, ui.theme.button_hi, 6 * s);
+    else if (hot) r_rect(r, ui.theme.hover, 6 * s, 0, 0.5f);
+    V4 fg = active || hot ? ui.theme.text : ui.theme.dim;
+    if (badge.size) {
+        F32 lx = r.x0 + 14 * s;
+        f_draw_text(ui.font.normal, lx, (r.y0 + r.y1 - ui.font.normal->line_height) * 0.5f, label, fg, 0);
+        F32 bx = lx + f_text_width(ui.font.normal, label) + 8 * s, bh = ui.font.caption->line_height + 4 * s;
+        ui_pill(rect(bx, (r.y0 + r.y1 - bh) * 0.5f, bx + ui_tab_badge_width(badge), (r.y0 + r.y1 + bh) * 0.5f), badge, ui.font.caption, ui_hex(0x0e1014, 1), ui.theme.ok);
+    } else {
+        ui_text_centered(ui.font.normal, r, label, fg);
+    }
+    return ui_clicked(r);
+}
+
+static F32 ui_pill_tab_width(String8 label) { return f_text_width(ui.font.normal, label) + 26 * ui.scale; }
+
+static B32 ui_pill_tab(Rect r, String8 label, B32 active)
+{
+    B32 hot = ui_mouse_in(r);
+    if (active) { ui_plate(r, ui.theme.accent_bg, (r.y1 - r.y0) * 0.5f); ui_text_centered(ui.font.normal, r, label, ui.theme.text); }
+    else ui_pill(r, label, ui.font.normal, hot ? ui.theme.text : ui.theme.dim, hot ? ui.theme.hover : ui_hex(0, 0));
+    return !active && ui_clicked(r);
+}
+
+static F32 ui_link_text(F_Font *f, F32 x, F32 y, String8 text, V4 color, F32 max_w, Rect *hit)
+{
+    F32 s = ui.scale, lh = f->line_height;
+    F32 end = f_draw_text(f, x, y, text, color, max_w);
+    Rect r = rect(x - 4 * s, y - 3 * s, end + 4 * s, y + lh + 3 * s);
+    if (ui_mouse_in(r) && ui_mouse_in(ui.clip)) {
+        r_rect(rect(x, y + lh - 1 * s, end, y + lh - 1 * s + ui_px()), color, 0, 0, 0);
+        ui.cursor = UI_CURSOR_HAND;
+    }
+    if (hit) *hit = r;
+    return end;
+}
+
+static B32 ui_busy_label(F32 right, F32 cy, String8 text)
+{
+    F32 s = ui.scale, tw = f_text_width(ui.font.normal, text);
+    f_draw_text(ui.font.normal, right - tw, cy - ui.font.normal->line_height * 0.5f, text, ui.theme.dim, 0);
+    return ui_spinner(right - tw - 12 * s, cy, 7 * s);
+}
+
+//- Popups
+
+static Rect ui_modal_begin(F32 w, F32 h, B32 *fresh)
+{
+    F32 s = ui.scale, W = ui.width, H = ui.height;
+    if (*fresh) { *fresh = 0; ui.in.released = 0; }
+    ui_overlay_begin();
+    r_rect(rect(0, 0, W, H), ui_hex(0x05070a, 0.72f), 0, 0, 0);
+    w = Min(w, W - 48 * s);
+    h = Min(h, H - 48 * s);
+    Rect panel = rect((F32)(int)((W - w) * 0.5f), (F32)(int)((H - h) * 0.5f), 0, 0);
+    panel.x1 = panel.x0 + w;
+    panel.y1 = panel.y0 + h;
+    r_rect(rect(panel.x0 - 2 * s, panel.y0 + 6 * s, panel.x1 + 2 * s, panel.y1 + 14 * s), ui_hex(0x000000, 0.5f), 12 * s, 0, 14 * s); // shadow
+    ui_panel(panel, 8 * s);
+    ui.clip = panel;
+    r_set_clip(panel);
+    return panel;
+}
+
+static B32 ui_modal_close_button(Rect panel)
+{
+    F32 s = ui.scale;
+    Rect cb = rect(panel.x1 - 12 * s - 32 * s, panel.y0 + 12 * s, panel.x1 - 12 * s, panel.y0 + 44 * s);
+    B32 hot = ui_mouse_in(cb);
+    if (hot) r_rect(cb, ui.theme.hover, 6 * s, 0, 0.5f);
+    ui_text_centered(ui.font.glyphs, cb, str8_lit("\xEE\xA2\xBB"), hot ? ui.theme.text : ui.theme.dim); // ChromeClose
+    return ui_clicked(cb);
+}
+
+static B32 ui_modal_end(Rect panel)
+{
+    F32 W = ui.width, H = ui.height;
+    r_set_clip(rect(0, 0, W, H));
+    ui.clip = rect(0, 0, W, H);
+    ui_panel_rim(panel, 8 * ui.scale);
+    B32 outside = ui.in.released && !point_in(panel, ui.in.press_x, ui.in.press_y) && !point_in(panel, ui.in.mx, ui.in.my);
+    ui_overlay_end();
+    return outside;
+}

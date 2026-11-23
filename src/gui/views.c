@@ -34,26 +34,6 @@ static String8 fmt_interface(Arena *a, String8 s)
     return s;
 }
 
-static String8 fmt_count(Arena *a, S64 n)
-{
-    if (n >= 1000000) return str8_pushf(a, "%.1fM", n / 1e6);
-    if (n >= 1000) return str8_pushf(a, "%.0fK", n / 1e3);
-    return str8_pushf(a, "%lld", n);
-}
-
-// 12345 -> "12,345"
-static String8 fmt_thousands(Arena *a, S64 n)
-{
-    char digits[32], out[48];
-    int nd = snprintf(digits, sizeof(digits), "%lld", n < 0 ? -n : n), o = 0;
-    if (n < 0) out[o++] = '-';
-    for (int i = 0; i < nd; i += 1) {
-        if (i && (nd - i) % 3 == 0) out[o++] = ',';
-        out[o++] = digits[i];
-    }
-    return str8_copy(a, str8((U8 *)out, (U64)o));
-}
-
 // A provider pill. Filled = where wam installs the addon from; outlined = also published there.
 static const U32 src_fg[SRC_COUNT] = { 0xffd2c2, 0xd9ccff, 0xffe6a8, 0xd0d7de, 0xbfe8ff };
 static const U32 src_bg[SRC_COUNT] = { 0x4a2618, 0x3a2b66, 0x4a3a12, 0x2d333b, 0x123a52 };
@@ -135,25 +115,8 @@ typedef struct RowLook {
 // A picture, or the initial of name on src's color (grey for -1) until (or unless) one loads.
 static void draw_icon(Rect r, String8 url, String8 name, int src, F32 radius)
 {
-    if (url.size && ui_image(r, url, UI_IMG_ICON, radius, ui_hex(0xffffff, 1))) return;
     int c = src >= 0 ? src : SRC_GITHUB;
-    r_rect(r, ui_hex(src_bg[c], 1), radius, 0, 0.5f);
-    name = str8_trim(name);
-    U64 n = 1;
-    while (n < name.size && (name.str[n] & 0xC0) == 0x80) n += 1;
-    U8 letter[8] = { 0 };
-    memcpy(letter, name.str, Min(n, 7));
-    if (letter[0] >= 'a' && letter[0] <= 'z') letter[0] -= 32;
-    ui_text_centered((r.y1 - r.y0) > 44 * ui.scale ? ui.font.title : ui.font.bold, r, str8(letter, name.size ? Min(n, 7) : 0), ui_hex(src_fg[c], 1));
-}
-
-// "Installing..." / "Updating...": a turning cog and the text, ending at `right`, centered on cy.
-// Returns 1 (keeps frames coming).
-static B32 draw_busy_label(F32 right, F32 cy, String8 text)
-{
-    F32 s = ui.scale, tw = f_text_width(ui.font.normal, text);
-    f_draw_text(ui.font.normal, right - tw, cy - ui.font.normal->line_height * 0.5f, text, C_DIM, 0);
-    return ui_spinner(right - tw - 12 * s, cy, 7 * s);
+    ui_avatar(r, url, name, ui_hex(src_fg[c], 1), ui_hex(src_bg[c], 1), radius);
 }
 
 // Draws the row's content. Returns 1 if the last press was on one of its pills (a link: the
@@ -194,15 +157,14 @@ static B32 draw_row_look(RowLook *l)
     F32 my = top + (ui.font.bold->line_height - ui.font.caption->line_height) * 0.5f;
     F32 mx = x + 12 * s;
     if (l->extra.size && l->text_right - 12 * s - mx > 30 * s) {
-        F32 ex = mx, lh = ui.font.caption->line_height;
-        mx = f_draw_text(ui.font.caption, mx, my, l->extra, l->extra_color, l->text_right - 12 * s - mx);
-        l->extra_rect = rect(ex - 4 * s, my - 3 * s, mx + 4 * s, my + lh + 3 * s);
+        F32 max_w = l->text_right - 12 * s - mx;
         if (l->extra_link) {
-            if (ui_mouse_in(l->extra_rect) && ui_mouse_in(l->list)) {
-                r_rect(rect(ex, my + lh - 1 * s, mx, my + lh - 1 * s + ui_px()), l->extra_color, 0, 0, 0);
-                ui.cursor = UI_CURSOR_HAND;
-            }
+            mx = ui_link_text(ui.font.caption, mx, my, l->extra, l->extra_color, max_w, &l->extra_rect);
             if (point_in(l->extra_rect, ui.in.press_x, ui.in.press_y)) pressed_pill = 1; // a link: not a click on the row
+        } else {
+            F32 ex = mx, lh = ui.font.caption->line_height;
+            mx = f_draw_text(ui.font.caption, mx, my, l->extra, l->extra_color, max_w);
+            l->extra_rect = rect(ex - 4 * s, my - 3 * s, mx + 4 * s, my + lh + 3 * s);
         }
         mx += 12 * s;
     }
@@ -266,7 +228,8 @@ static B32 draw_installed(Rect list)
     for (U64 r = 0; r < nrows; r += 1) if (!app.gone.count || !keyset_has(&app.gone, snap->rows[r].key)) vis[nvis++] = (U32)r;
     U64 count = npend + nvis;
     F32 row_h = ADDON_ROW_H * s;
-    B32 animating = ui_scroll_list(&app.scroll[VIEW_INSTALLED], list, (F32)count * row_h);
+    UI_List l = ui_list_begin(&app.scroll[VIEW_INSTALLED], list, (S64)count, row_h, 0);
+    B32 animating = l.animating;
 
     // While a listing is on its way: a thin sliding bar along the top of the list. What's shown
     // meanwhile is this flavor's last listing (or a "Loading" line the first time).
@@ -274,16 +237,12 @@ static B32 draw_installed(Rect list)
         animating |= ui_loading_bar(list);
     }
 
-    ui.clip = list;
-    r_set_clip(list);
     F32 actions_w = 250 * s; // Overwrite edits, Remove and the pin
     F32 col_actions = list.x1 - 16 * s - actions_w;
 
-    S64 first = (S64)(app.scroll[VIEW_INSTALLED].pos / row_h);
-    S64 last = Min((S64)count, first + (S64)((list.y1 - list.y0) / row_h) + 2);
-    for (S64 i = first; i < last; i += 1) {
-        F32 ry = (F32)(int)(list.y0 + (F32)i * row_h - app.scroll[VIEW_INSTALLED].pos);
-        Rect rr = rect(list.x0, ry, list.x1, ry + row_h);
+    for (S64 i = l.first; i < l.last; i += 1) {
+        Rect rr = ui_list_row(&l, i);
+        F32 ry = rr.y0;
         if (i < (S64)npend) {
             // An install on its way: its picture and name, and how far it is.
             PendingInstall *p = pend[i];
@@ -376,7 +335,7 @@ static B32 draw_installed(Rect list)
         x = rb.x0 - 8 * s;
         if (row->update && !row->pinned && app.updating.count && keyset_has(&app.updating, row->key)) {
             String8 busy = str8_lit("Updating...");
-            animating |= draw_busy_label(x, ry + row_h * 0.5f, busy);
+            animating |= ui_busy_label(x, ry + row_h * 0.5f, busy);
             x -= f_text_width(ui.font.normal, busy) + 32 * s;
         } else if (row->update && !row->pinned) {
             // Website-only files open CurseForge's download page in a window: the arrow says so.
@@ -424,7 +383,7 @@ static B32 draw_installed(Rect list)
                     : str8_lit("No addons installed for this flavor yet. Find some under Get addons, or drop a .zip / .rar here.");
         ui_text_centered(ui.font.normal, rect(list.x0, list.y0, list.x1, list.y0 + 120 * s), msg, C_DIM);
     }
-    ui_scrollbar(&app.scroll[VIEW_INSTALLED], list, (F32)count * row_h);
+    ui_list_end(&l);
     return animating;
 }
 
@@ -862,23 +821,23 @@ static void show_category_menu(void)
     S32 cat_of[MAX], sub_of[MAX]; // what each item picks; cat -2 = nothing (separator, submenu)
     U32 n = 0;
     #define MENU_ADD(label_, parent_, checked_, cat_, sub_) do { items[n] = (WM_MenuItem){ label_, parent_, checked_ }; cat_of[n] = cat_; sub_of[n] = sub_; n += 1; } while (0)
-    MENU_ADD(str8_pushf(a, "All categories  (%.*s)", S8F(fmt_thousands(a, (S64)app.cat_any))), -1, app.category < 0, -1, -1);
+    MENU_ADD(str8_pushf(a, "All categories  (%.*s)", S8F(str8_thousands(a, (S64)app.cat_any))), -1, app.category < 0, -1, -1);
     MENU_ADD(str8_lit("-"), -1, 0, -2, -1);
     for (U32 c = 0; c < CAT_CATEGORY_COUNT; c += 1) {
         if (!app.cat_counts[c] && (S32)c != app.category) continue;
-        String8 label = str8_pushf(a, "%s  (%.*s)", cat_categories[c].name, S8F(fmt_thousands(a, (S64)app.cat_counts[c])));
+        String8 label = str8_pushf(a, "%s  (%.*s)", cat_categories[c].name, S8F(str8_thousands(a, (S64)app.cat_counts[c])));
         B32 has_subs = 0;
         for (U32 sc = 0; sc < CAT_SUBCATEGORY_COUNT && !has_subs; sc += 1)
             has_subs = cat_sub_parent(sc) == (S32)c && (app.sub_counts[sc] || (S32)sc == app.subcategory);
         if (!has_subs) { MENU_ADD(label, -1, (S32)c == app.category, (S32)c, -1); continue; }
         S32 parent = (S32)n;
         MENU_ADD(label, -1, (S32)c == app.category, -2, -1);
-        MENU_ADD(str8_pushf(a, "All %s  (%.*s)", cat_categories[c].name, S8F(fmt_thousands(a, (S64)app.cat_counts[c]))), parent,
+        MENU_ADD(str8_pushf(a, "All %s  (%.*s)", cat_categories[c].name, S8F(str8_thousands(a, (S64)app.cat_counts[c]))), parent,
                  (S32)c == app.category && app.subcategory < 0, (S32)c, -1);
         MENU_ADD(str8_lit("-"), parent, 0, -2, -1);
         for (U32 sc = 0; sc < CAT_SUBCATEGORY_COUNT; sc += 1) {
             if (cat_sub_parent(sc) != (S32)c || (!app.sub_counts[sc] && (S32)sc != app.subcategory)) continue;
-            MENU_ADD(str8_pushf(a, "%s  (%.*s)", cat_subcategories[sc].name, S8F(fmt_thousands(a, (S64)app.sub_counts[sc]))), parent,
+            MENU_ADD(str8_pushf(a, "%s  (%.*s)", cat_subcategories[sc].name, S8F(str8_thousands(a, (S64)app.sub_counts[sc]))), parent,
                      (S32)sc == app.subcategory, (S32)c, (S32)sc);
         }
     }
@@ -951,7 +910,7 @@ static F32 draw_browse_filters(Rect r)
     Rect hit = rect(cbx, y, r.x1, y + h);
     if (ui_clicked(hit) && !point_in(rect(cbx, y, cbx + 16 * s, y + h), ui.in.press_x, ui.in.press_y)) app.hide_installed = !app.hide_installed;
     String8 info = app.catalog_served < app.catalog_asked && app.cat.count ? str8_lit("Updating the list...")
-                 : str8_pushf(fa, "%.*s addon%s", S8F(fmt_thousands(fa, (S64)app.order_count)), app.order_count == 1 ? "" : "s");
+                 : str8_pushf(fa, "%.*s addon%s", S8F(str8_thousands(fa, (S64)app.order_count)), app.order_count == 1 ? "" : "s");
     F32 iw = f_text_width(ui.font.caption, info);
     if (cbx - 16 * s - iw > x) f_draw_text(ui.font.caption, cbx - 16 * s - iw, r.y0 + (r.y1 - r.y0 - ui.font.caption->line_height) * 0.5f, info, C_FAINT, 0);
     return r.y1 - r.y0;
@@ -1064,15 +1023,6 @@ static B32 viewer_event(WM_Event *e)
     return 1;
 }
 
-// A round button with a symbol; returns 1 when clicked.
-static B32 viewer_button(Rect b, String8 symbol, F_Font *f)
-{
-    B32 hot = ui_mouse_in(b);
-    r_rect(b, ui_hex(0xffffff, hot ? 0.18f : 0.08f), (b.y1 - b.y0) * 0.5f, 0, 0.5f);
-    ui_text_centered(f, b, symbol, ui_hex(0xffffff, hot ? 1.0f : 0.8f));
-    return ui_clicked(b);
-}
-
 // Draws the viewer over everything (the frame set the overlay to the whole window).
 static B32 draw_viewer(void)
 {
@@ -1093,21 +1043,18 @@ static B32 draw_viewer(void)
     }
     B32 used = 0; // a button took the click
     F32 bs = 36 * s;
-    if (viewer_button(rect(W - 16 * s - bs, 12 * s, W - 16 * s, 12 * s + bs), str8_lit("✕"), ui.font.normal)) { app.viewer_open = 0; used = 1; }
+    if (ui_glass_button(rect(W - 16 * s - bs, 12 * s, W - 16 * s, 12 * s + bs), str8_lit("✕"), ui.font.normal)) { app.viewer_open = 0; used = 1; }
     if (app.viewer_count > 1) {
         ui_text_centered(ui.font.normal, rect(0, 12 * s, W, 12 * s + bs), str8_pushf(fa, "%u / %u", app.viewer_index + 1, app.viewer_count), ui_hex(0xffffff, 0.75f));
         F32 ab = 44 * s, cy = H * 0.5f;
-        if (viewer_button(rect(16 * s, cy - ab * 0.5f, 16 * s + ab, cy + ab * 0.5f), str8_lit("‹"), ui.font.title)) { viewer_step(-1); used = 1; }
-        if (viewer_button(rect(W - 16 * s - ab, cy - ab * 0.5f, W - 16 * s, cy + ab * 0.5f), str8_lit("›"), ui.font.title)) { viewer_step(1); used = 1; }
+        if (ui_glass_button(rect(16 * s, cy - ab * 0.5f, 16 * s + ab, cy + ab * 0.5f), str8_lit("‹"), ui.font.title)) { viewer_step(-1); used = 1; }
+        if (ui_glass_button(rect(W - 16 * s - ab, cy - ab * 0.5f, W - 16 * s, cy + ab * 0.5f), str8_lit("›"), ui.font.title)) { viewer_step(1); used = 1; }
     }
     // The page with the full picture, for saving it.
     String8 ol = str8_lit("Open in browser");
     F32 ow = f_text_width(ui.font.caption, ol) + 24 * s;
     Rect ob = rect(16 * s, 12 * s + (bs - 26 * s) * 0.5f, 16 * s + ow, 12 * s + (bs + 26 * s) * 0.5f);
-    B32 ohot = ui_mouse_in(ob);
-    r_rect(ob, ui_hex(0xffffff, ohot ? 0.18f : 0.08f), 13 * s, 0, 0.5f);
-    ui_text_centered(ui.font.caption, ob, ol, ui_hex(0xffffff, ohot ? 1.0f : 0.8f));
-    if (ui_clicked(ob)) { os_open_url(url); used = 1; }
+    if (ui_glass_button(ob, ol, ui.font.caption)) { os_open_url(url); used = 1; }
     // A click beside the picture closes the viewer.
     if (!used && ui.in.released && point_in(full, ui.in.press_x, ui.in.press_y) && !point_in(drawn, ui.in.press_x, ui.in.press_y)) app.viewer_open = 0;
     ui_overlay_end();
@@ -1176,10 +1123,10 @@ static B32 draw_detail(Rect p, SearchResult *e)
     // Facts (of both sources, for an addon on two).
     String8List facts = { 0 };
     RowFacts rf = row_facts(e);
-    if (rf.downloads > 0) str8_list_push(fa, &facts, str8_pushf(fa, "%.*s download%s", S8F(fmt_thousands(fa, rf.downloads)), rf.downloads == 1 ? "" : "s"));
+    if (rf.downloads > 0) str8_list_push(fa, &facts, str8_pushf(fa, "%.*s download%s", S8F(str8_thousands(fa, rf.downloads)), rf.downloads == 1 ? "" : "s"));
     if (rf.updated > 0) str8_list_push(fa, &facts, str8_pushf(fa, "updated %.*s", S8F(fmt_ago(fa, (U64)rf.updated))));
     if (rf.created > 0) str8_list_push(fa, &facts, str8_pushf(fa, "since %.*s", S8F(fmt_year(fa, rf.created))));
-    if (d && d->favorites > 0) str8_list_push(fa, &facts, str8_pushf(fa, "%.*s favorite%s", S8F(fmt_thousands(fa, d->favorites)), d->favorites == 1 ? "" : "s"));
+    if (d && d->favorites > 0) str8_list_push(fa, &facts, str8_pushf(fa, "%.*s favorite%s", S8F(str8_thousands(fa, d->favorites)), d->favorites == 1 ? "" : "s"));
     if (facts.count) { y += ui_text_wrapped(ui.font.caption, x, y, w, str8_list_join(fa, &facts, str8_lit("  ·  ")), C_FAINT, p.y0, p.y1); }
     if (d && d->version.size) y += ui_text_wrapped(ui.font.caption, x, y + 2 * s, w, str8_pushf(fa, "Latest: %.*s", S8F(d->version)), C_FAINT, p.y0, p.y1) + 2 * s;
     y += 12 * s;
@@ -1324,29 +1271,22 @@ static B32 draw_search(Rect area)
     r_rect(rect(area.x0, list.y0 - ui_px(), area.x1, list.y0), C_BORDER, 0, 0, 0);
     U64 count = app.order_count;
     B32 paging = app.suggest_served < app.more_asked;
-    F32 content_h = (F32)count * row_h + (paging && count ? row_h : 0);
 
     // Keep the selected row in view.
     if (app.sel_reveal && app.sel_index >= 0) {
-        UI_Scroll *sc = &app.scroll[VIEW_SEARCH];
-        F32 top = (F32)app.sel_index * row_h, bottom = top + row_h, view_h = list.y1 - list.y0;
-        if (top < sc->target) sc->target = top;
-        else if (bottom > sc->target + view_h) sc->target = bottom - view_h;
+        ui_scroll_reveal(&app.scroll[VIEW_SEARCH], (F32)app.sel_index * row_h, (F32)(app.sel_index + 1) * row_h, list.y1 - list.y0);
         app.sel_reveal = 0;
     }
-    animating |= ui_scroll_list(&app.scroll[VIEW_SEARCH], list, content_h);
+    UI_List l = ui_list_begin(&app.scroll[VIEW_SEARCH], list, (S64)count, row_h, paging && count ? row_h : 0); // + a "Loading more..." row
+    animating |= l.animating;
 
-    ui.clip = list;
-    r_set_clip(list);
     String8 q = browse_query();
-    S64 first = (S64)(app.scroll[VIEW_SEARCH].pos / row_h);
-    S64 last = Min((S64)count, first + (S64)((list.y1 - list.y0) / row_h) + 2);
     F32 col_right = list.x1 - 16 * s - 130 * s;
     app.hover_index = -1;
-    for (S64 i = first; i < last; i += 1) {
+    for (S64 i = l.first; i < l.last; i += 1) {
         SearchResult *r = &app.cat.v[app.order[i]];
-        F32 ry = (F32)(int)(list.y0 + (F32)i * row_h - app.scroll[VIEW_SEARCH].pos);
-        Rect rr = rect(list.x0, ry, list.x1, ry + row_h);
+        Rect rr = ui_list_row(&l, i);
+        F32 ry = rr.y0;
         B32 hot = ui_mouse_in(rr) && ui_mouse_in(list), sel = i == app.sel_index;
         if (hot) app.hover_index = i;
         if (sel) r_rect(rr, C_SELECTED, 0, 0, 0);
@@ -1368,7 +1308,7 @@ static B32 draw_search(Rect area)
         look.site_only = r->site_only;
         String8List meta = { 0 };
         if (r->author.size) str8_list_push(fa, &meta, r->author);
-        if (rf.downloads > 0) str8_list_push(fa, &meta, str8_pushf(fa, "%.*s download%s", S8F(fmt_count(fa, rf.downloads)), rf.downloads == 1 ? "" : "s")); // Tukui reports no counts
+        if (rf.downloads > 0) str8_list_push(fa, &meta, str8_pushf(fa, "%.*s download%s", S8F(str8_count_short(fa, rf.downloads)), rf.downloads == 1 ? "" : "s")); // Tukui reports no counts
         if (rf.updated > 0) str8_list_push(fa, &meta, str8_pushf(fa, "updated %.*s", S8F(fmt_ago(fa, (U64)rf.updated))));
         look.meta = str8_list_join(fa, &meta, str8_lit("  \xC2\xB7  "));
         look.line2 = r->summary; look.line2_color = C_DIM;
@@ -1402,11 +1342,11 @@ static B32 draw_search(Rect area)
         }
     }
     if (paging && count) {
-        F32 ry = list.y0 + (F32)count * row_h - app.scroll[VIEW_SEARCH].pos;
+        F32 ry = ui_list_row(&l, (S64)count).y0;
         ui_text_centered(ui.font.caption, rect(list.x0, ry, list.x1, ry + row_h), str8_lit("Loading more..."), C_FAINT);
     }
     // Near the end: the next page of this sort (CurseForge).
-    if (!app.more_done && !paging && !(app.src_hidden & (1u << SRC_CURSEFORGE)) && app.suggest_served >= app.suggest_asked && last + 10 >= (S64)count
+    if (!app.more_done && !paging && !(app.src_hidden & (1u << SRC_CURSEFORGE)) && app.suggest_served >= app.suggest_asked && l.last + 10 >= (S64)count
         && (q.size == 0 || app.more_index > 0) && app.catalog_served >= app.catalog_asked) {
         request_page(app.more_sort, q, app.more_index);
     }
@@ -1439,7 +1379,7 @@ static B32 draw_search(Rect area)
     } else if (app.suggest_served < app.suggest_asked && !paging) {
         animating |= ui_loading_bar(rect(list.x0, list.y0, list.x1, list.y0 + 2 * s)); // a search is on its way
     }
-    ui_scrollbar(&app.scroll[VIEW_SEARCH], list, content_h);
+    ui_list_end(&l);
     if (panel) {
         animating |= draw_detail(rect(list.x1, list.y0, area.x1, area.y1), sel_e);
         // The divider: drag it to resize the panel.
@@ -1488,17 +1428,11 @@ static void request_downloads_scan(void)
     push_task(TASK_SCAN_DOWNLOADS, str8(0, 0));
 }
 
+// How long ago unix time mtime was ("5 min ago").
 static String8 fmt_ago(Arena *a, U64 mtime)
 {
     U64 now = (U64)cat_now();
-    U64 d = now > mtime ? now - mtime : 0;
-    if (d < 60) return str8_lit("just now");
-    if (d < 3600) return str8_pushf(a, "%llu min ago", d / 60);
-    if (d < 86400) return str8_pushf(a, "%llu h ago", d / 3600);
-    if (d < 86400 * 2) return str8_lit("yesterday");
-    if (d < 86400 * 60) return str8_pushf(a, "%llu days ago", d / 86400);
-    if (d < 86400 * 730) return str8_pushf(a, "%llu months ago", d / (86400 * 30));
-    return str8_pushf(a, "%llu years ago", d / (86400 * 365));
+    return str8_ago(a, now > mtime ? now - mtime : 0);
 }
 
 static B32 draw_downloads(Rect area)
@@ -1516,19 +1450,16 @@ static B32 draw_downloads(Rect area)
     r_rect(rect(list.x0, list.y0 - ui_px(), list.x1, list.y0), C_LINE, 0, 0, 0);
 
     F32 row_h = 56 * s;
-    B32 animating = ui_scroll_list(&app.scroll[VIEW_DOWNLOADS], list, (F32)count * row_h);
-    ui.clip = list;
-    r_set_clip(list);
+    UI_List l = ui_list_begin(&app.scroll[VIEW_DOWNLOADS], list, (S64)count, row_h, 0);
+    B32 animating = l.animating;
     F32 col_actions = list.x1 - 16 * s - 230 * s;
     F32 col_iface = col_actions - 70 * s;
     F32 col_version = col_iface - 190 * s;
 
-    S64 first = (S64)(app.scroll[VIEW_DOWNLOADS].pos / row_h);
-    S64 last = Min((S64)count, first + (S64)((list.y1 - list.y0) / row_h) + 2);
-    for (S64 i = first; i < last; i += 1) {
+    for (S64 i = l.first; i < l.last; i += 1) {
         DownloadItem *it = &ds->list.v[i];
-        F32 ry = (F32)(int)(list.y0 + (F32)i * row_h - app.scroll[VIEW_DOWNLOADS].pos);
-        Rect rr = rect(list.x0, ry, list.x1, ry + row_h);
+        Rect rr = ui_list_row(&l, i);
+        F32 ry = rr.y0;
         if (ui_mouse_in(rr) && ui_mouse_in(list)) r_rect(rr, C_HOVER, 0, 0, 0);
         if (i > 0) r_rect(rect(rr.x0 + 16 * s, ry, rr.x1 - 16 * s, ry + ui_px()), C_LINE, 0, 0, 0);
 
@@ -1600,7 +1531,7 @@ static B32 draw_downloads(Rect area)
         ui_text_centered(ui.font.caption, rect(list.x0, cy + 28 * s, list.x1, cy + 48 * s),
                            str8_lit("Download an addon (.zip, .rar or .7z) in your browser and it shows up here."), C_FAINT);
     }
-    ui_scrollbar(&app.scroll[VIEW_DOWNLOADS], list, (F32)count * row_h);
+    ui_list_end(&l);
     return animating;
 }
 

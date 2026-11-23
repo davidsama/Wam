@@ -83,6 +83,11 @@ static String8 str8_list_join(Arena *a, String8List *l, String8 sep);
 static U8      char_lower(U8 c);
 static B32     char_is_space(U8 c);
 
+//- Numbers and times for people to read
+static String8 str8_count_short(Arena *a, S64 n);  // 1234567 -> "1.2M", 12345 -> "12K", 999 -> "999"
+static String8 str8_thousands(Arena *a, S64 n);    // 12345 -> "12,345"
+static String8 str8_ago(Arena *a, U64 seconds);    // how long ago: "just now", "5 min ago", "yesterday", "3 months ago"...
+
 //- Paths (Windows separators)
 static String8 path_join(Arena *a, String8 dir, String8 name);
 static String8 path_dirname(String8 path);

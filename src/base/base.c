@@ -102,6 +102,38 @@ static String8 str8_pushf(Arena *a, char *fmt, ...)
     return r;
 }
 
+//- Numbers and times for people to read
+
+static String8 str8_count_short(Arena *a, S64 n)
+{
+    if (n >= 1000000) return str8_pushf(a, "%.1fM", n / 1e6);
+    if (n >= 1000) return str8_pushf(a, "%.0fK", n / 1e3);
+    return str8_pushf(a, "%lld", n);
+}
+
+static String8 str8_thousands(Arena *a, S64 n)
+{
+    char digits[32], out[48];
+    int nd = snprintf(digits, sizeof(digits), "%llu", n < 0 ? 0 - (U64)n : (U64)n), o = 0;
+    if (n < 0) out[o++] = '-';
+    for (int i = 0; i < nd; i += 1) {
+        if (i && (nd - i) % 3 == 0) out[o++] = ',';
+        out[o++] = digits[i];
+    }
+    return str8_copy(a, str8((U8 *)out, (U64)o));
+}
+
+static String8 str8_ago(Arena *a, U64 d)
+{
+    if (d < 60) return str8_lit("just now");
+    if (d < 3600) return str8_pushf(a, "%llu min ago", d / 60);
+    if (d < 86400) return str8_pushf(a, "%llu h ago", d / 3600);
+    if (d < 86400 * 2) return str8_lit("yesterday");
+    if (d < 86400 * 60) return str8_pushf(a, "%llu days ago", d / 86400);
+    if (d < 86400 * 730) return str8_pushf(a, "%llu months ago", d / (86400 * 30));
+    return str8_pushf(a, "%llu years ago", d / (86400 * 365));
+}
+
 static String8 str8_prefix(String8 s, U64 n) { s.size = Min(n, s.size); return s; }
 static String8 str8_skip(String8 s, U64 n) { n = Min(n, s.size); s.str += n; s.size -= n; return s; }
 static String8 str8_chop(String8 s, U64 n) { s.size -= Min(n, s.size); return s; }
