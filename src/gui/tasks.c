@@ -456,6 +456,7 @@ static U32 worker_main(void *p)
         os_atomic_store(&work_task, (S32)t.id);
         run_task(&t);
         os_atomic_store(&work_task, 0);
+        os_atomic_store(&work_finished, (S32)t.id);
         task_log(&t, start, os_now_us());
         wm_post(on_task_done, t.id, 0);
     }

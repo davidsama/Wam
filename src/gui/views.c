@@ -199,7 +199,7 @@ static B32 draw_row_look(RowLook *l)
 
 //- Views
 
-// What a pending removal would do: mark[i] 1 = chosen, 2 = unused dependency, plus
+// What a pending removal would do: mark[i] 1 = chosen, 2 = unused dependency (3, meanwhile: already being removed), plus
 // rows that stay but need something being removed.
 typedef struct RemovePlan { U8 *mark; String8List chosen, deps, broken, keys; } RemovePlan;
 
@@ -214,9 +214,11 @@ static RemovePlan remove_plan(Arena *a, Snapshot *snap, KeySet *chosen, B32 with
     for (U64 i = 0; i < n; i += 1) {
         u.v[i].req = snap->rows[i].req;
         u.v[i].req_count = snap->rows[i].req_count;
-        if (keyset_has(chosen, snap->rows[i].key)) p.mark[i] = 1;
+        if (row_hidden(snap->rows[i].key)) { u.v[i].req_count = 0; p.mark[i] = 3; } // already on its way out: it needs nothing
+        else if (keyset_has(chosen, snap->rows[i].key)) p.mark[i] = 1;
     }
     mgr_mark_unused_deps(&u, p.mark);
+    for (U64 i = 0; i < n; i += 1) if (p.mark[i] == 3) p.mark[i] = 0;
     for (U64 i = 0; i < n; i += 1) {
         Row *r = &snap->rows[i];
         if (p.mark[i] == 1) str8_list_push(a, &p.chosen, r->title);
@@ -228,10 +230,14 @@ static RemovePlan remove_plan(Arena *a, Snapshot *snap, KeySet *chosen, B32 with
     return p;
 }
 
-static void start_remove(KeySet *keys)
+static void remove_open(KeySet *keys); // remove.c
+
+// The Remove button of a row: that addon, or every checked one when it's among them.
+static void start_remove(String8 key)
 {
-    app.removing = *keys;
-    app.remove_with_deps = 1;
+    KeySet *keys = push_struct(ui.frame_arena, KeySet);
+    if (keyset_has(&app.selected, key)) *keys = app.selected; else keyset_add(keys, key);
+    remove_open(keys);
 }
 
 static void browse_link(void);
@@ -249,7 +255,7 @@ static B32 draw_installed(Rect list)
     U64 nrows = snap ? snap->row_count : 0;
     U32 *vis = push_array(fa, U32, nrows + 1);
     U64 nvis = 0;
-    for (U64 r = 0; r < nrows; r += 1) if (!app.gone.count || !keyset_has(&app.gone, snap->rows[r].key)) vis[nvis++] = (U32)r;
+    for (U64 r = 0; r < nrows; r += 1) if (!row_hidden(snap->rows[r].key)) vis[nvis++] = (U32)r;
     U64 count = npend + nvis;
     F32 row_h = ADDON_ROW_H * s;
     UI_List l = ui_list_begin(&app.scroll[VIEW_INSTALLED], list, (S64)count, row_h, 0);
@@ -352,9 +358,7 @@ static B32 draw_installed(Rect list)
         String8 remove_label = str8_lit("Remove");
         Rect rb = rect(x - ui_button_width(remove_label), by, x, by + bh);
         if (ui_button(rb, remove_label, C_TEXT, C_BUTTON, C_BUTTON_HI)) {
-            KeySet *one = push_struct(fa, KeySet);
-            keyset_add(one, row->key);
-            start_remove(one);
+            start_remove(row->key);
         }
         x = rb.x0 - 8 * s;
         if (row->update && !row->pinned && app.updating.count && keyset_has(&app.updating, row->key)) {

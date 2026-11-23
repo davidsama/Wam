@@ -80,6 +80,7 @@
 #include "gui/themes.c"     // the looks to pick from
 #include "gui/settings.c"   // the settings popup
 #include "gui/changes.c"    // the changes popup (what an update would bring)
+#include "gui/remove.c"     // the removal popup
 #include "gui/wordmark.c"   // the name in the header
 #include "gui/frame.c"
 #include "gui/session.c"
@@ -269,8 +270,8 @@ static void search_enter(void)
 
 static void app_event(WM_Event *e)
 {
-    // The picture viewer takes every key while it's open; so do the settings and changes popups.
-    if (viewer_event(e) || settings_event(e) || changes_event(e)) return;
+    // The picture viewer takes every key while it's open; so do the popups.
+    if (viewer_event(e) || settings_event(e) || changes_event(e) || remove_event(e)) return;
     B32 search = app.view == VIEW_SEARCH;
     char before[256]; U32 before_len = app.query.len; memcpy(before, app.query.s, sizeof(before));
     if (e->kind == WM_EVENT_KEY) {
@@ -282,11 +283,10 @@ static void app_event(WM_Event *e)
         if (k == WM_KEY_F5) push_task(TASK_REFRESH, str8(0, 0));
         if (ctrl && k == 'F') app.view = VIEW_SEARCH;
         if (ctrl && k == 'A' && app.view == VIEW_INSTALLED && app.snap) {
-            for (U64 i = 0; i < app.snap->row_count; i += 1) keyset_add(&app.selected, app.snap->rows[i].key);
+            for (U64 i = 0; i < app.snap->row_count; i += 1) if (!row_hidden(app.snap->rows[i].key)) keyset_add(&app.selected, app.snap->rows[i].key);
         }
         if (k == WM_KEY_ESCAPE) {
-            if (app.removing.count) keyset_clear(&app.removing);    // first: cancel a pending remove
-            else if (search && app.sel_id[0]) { app.sel_id[0] = 0; app.sel_index = -1; } // first Esc: the selection
+            if (search && app.sel_id[0]) { app.sel_id[0] = 0; app.sel_index = -1; } // first Esc: the selection
             else if (search) app.query.len = 0;
             else keyset_clear(&app.selected);
         }
@@ -475,5 +475,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     WM_WindowPlace *p = &wm_window_place;
     if (p->w > 0 && p->h > 0) wam_save_window((WamWindow){ p->x, p->y, p->w, p->h, p->maximized });
     session_save();
+    // A removal the user confirmed, still waiting for its turn or under way: let it finish.
+    if (app.gone.count) for (int i = 0; i < 1500 && work_finished < (S32)app.gone_task; i += 1) Sleep(20); // 30 s at most
     return code;
 }

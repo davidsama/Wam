@@ -1,5 +1,5 @@
 // gui/frame.c - the window's composition: header (flavors, install picker), toolbar (view tabs and
-// actions), the remove confirmation bar, the content panel with the current view, and the status bar.
+// actions), the content panel with the current view, and the status bar.
 // Also switching flavors and installs. Part of main_gui.c's unity build.
 
 static void app_event(WM_Event *e); // main_gui.c: keys and typing
@@ -18,7 +18,7 @@ static String8 status_summary(Arena *a, Snapshot *snap)
     U64 n = 0, updates = 0;
     for (U64 i = 0; i < snap->row_count; i += 1) {
         Row *r = &snap->rows[i];
-        if (app.gone.count && keyset_has(&app.gone, r->key)) continue; // being removed
+        if (row_hidden(r->key)) continue; // being removed
         n += 1;
         updates += r->update && !r->pinned;
     }
@@ -133,17 +133,18 @@ static B32 app_frame(void)
     // Keys and typing since the last frame first, so this frame shows what they did.
     for (U32 i = 0; i < ui.event_count; i += 1) app_event(&ui.events[i]);
     Snapshot *snap = app.snap;
+    if (!snap) keyset_clear(&app.removing);
     B32 animating = 0;
     // The picture viewer covers the window: nothing under it sees the mouse.
     if (app.viewer_open && app.view != VIEW_SEARCH) app.viewer_open = 0;
     // So does the settings popup (its backdrop covers the window).
-    ui_overlay_set(rect(0, 0, W, H), app.viewer_open || app.settings_open || app.changes_open);
+    ui_overlay_set(rect(0, 0, W, H), app.viewer_open || app.settings_open || app.changes_open || app.removing.count);
 
     //- Header: title + flavor tabs
     F32 header_h = 56 * s;
     r_rect_gradient(rect(0, 0, W, header_h), ui_mix(C_PANEL, C_HOVER, 0.6f), C_PANEL, 0, 0, 0, 0);
     // The header is the window's title bar: what isn't a widget in it drags the window.
-    wm_caption(app.viewer_open || app.settings_open || app.changes_open ? 0 : header_h);
+    wm_caption(app.viewer_open || app.settings_open || app.changes_open || app.removing.count ? 0 : header_h);
     // What fits: the flavor tabs always do. When the window is narrow, the name goes first (the emblem
     // stays), then the game version, and then the install button shrinks to a folder icon.
     F32 tabs_w = 0;
@@ -235,7 +236,7 @@ static B32 app_frame(void)
         }
         // Installed counts what the list shows: installs on their way, not rows being removed.
         U64 shown = snap ? snap->row_count : 0;
-        if (v == VIEW_INSTALLED && snap && app.gone.count) for (U64 i = 0; i < snap->row_count; i += 1) shown -= keyset_has(&app.gone, snap->rows[i].key);
+        if (v == VIEW_INSTALLED && snap) for (U64 i = 0; i < snap->row_count; i += 1) shown -= row_hidden(snap->rows[i].key);
         if (v == VIEW_INSTALLED) { PendingInstall *pend[8]; shown += feedback_installs(pend, ArrayCount(pend)); }
         String8 label = v == VIEW_INSTALLED ? str8_pushf(fa, "Installed  %llu###installed", shown)
                       : v == VIEW_SEARCH ? str8_lit("Get addons")
@@ -261,7 +262,7 @@ static B32 app_frame(void)
         rx = cb.x0 - 8 * s;
         String8 rem = str8_pushf(fa, "Remove  %u###remove", app.selected.count);
         Rect rb = rect(rx - ui_button_width(rem), ty, rx, ty + th);
-        if (ui_button(rb, rem, C_TEXT, C_DANGER, C_DANGER_HI)) start_remove(&app.selected);
+        if (ui_button(rb, rem, C_TEXT, C_DANGER, C_DANGER_HI)) remove_open(&app.selected);
         rx = rb.x0 - 8 * s;
         if (upd.count) {
             String8 label = str8_pushf(fa, "Update  %llu###update", upd.count);
@@ -274,66 +275,24 @@ static B32 app_frame(void)
         Rect cb = rect(rx - ui_button_width(check), ty, rx, ty + th);
         if (ui_button(cb, check, C_TEXT, C_BUTTON, C_BUTTON_HI)) push_task(TASK_SYNC, str8(0, 0));
         rx = cb.x0 - 8 * s;
-        if (snap && snap->updates) {
-            String8 all = str8_pushf(fa, "Update all  %llu###update all", snap->updates);
+        U64 updates = snap ? snap->updates : 0;
+        if (updates) for (U64 i = 0; i < snap->row_count; i += 1) updates -= snap->rows[i].update && !snap->rows[i].pinned && row_hidden(snap->rows[i].key);
+        if (updates) {
+            String8 all = str8_pushf(fa, "Update all  %llu###update all", updates);
             Rect ab = rect(rx - ui_button_width(all), ty, rx, ty + th);
             if (ui_button(ab, all, C_TEXT, C_ACCENT_BG, C_ACCENT)) {
                 // Update all: what it will update shows as updating (not pinned or edited ones: it skips those).
                 String8List upd = { 0 };
                 for (U64 i = 0; i < snap->row_count; i += 1) {
                     Row *r = &snap->rows[i];
-                    if (r->update && !r->pinned && !r->edited) str8_list_push(fa, &upd, r->key);
+                    if (r->update && !r->pinned && !r->edited && !row_hidden(r->key)) str8_list_push(fa, &upd, r->key);
                 }
                 feedback_update(push_task(TASK_UPDATE, str8(0, 0)), &upd);
             }
         }
     }
 
-    //- Remove confirmation bar
     F32 content_top = ty + th + 12 * s;
-    if (app.view == VIEW_INSTALLED && app.removing.count && snap) {
-        RemovePlan plan = remove_plan(fa, snap, &app.removing, app.remove_with_deps);
-        if (!plan.chosen.count) {
-            keyset_clear(&app.removing);
-        } else {
-            F32 line = 24 * s, pad = 14 * s;
-            int lines = 1 + (plan.deps.count > 0) + (plan.broken.count > 0);
-            Rect bar = rect(16 * s, content_top, W - 16 * s, content_top + pad * 2 + line * (F32)lines);
-            r_rect(bar, ui_hex(0x2a1c1f, 1), 8 * s, 0, 0.5f);
-            r_rect(bar, ui_hex(0x5a2a2c, 1), 8 * s, ui_px(), 0.5f);
-
-            F32 bx = bar.x1 - pad, bh = 30 * s, by = bar.y0 + pad;
-            String8 cancel = str8_lit("Cancel");
-            Rect cb = rect(bx - ui_button_width(cancel), by, bx, by + bh);
-            if (ui_button(cb, cancel, C_TEXT, C_BUTTON, C_BUTTON_HI)) keyset_clear(&app.removing);
-            U64 total = plan.keys.count;
-            String8 go = total > 1 ? str8_pushf(fa, "Remove %llu addons", total) : str8_lit("Remove");
-            Rect gb = rect(cb.x0 - 8 * s - ui_button_width(go), by, cb.x0 - 8 * s, by + bh);
-            if (ui_button(gb, go, C_TEXT, C_DANGER, C_DANGER_HI)) {
-                // The rows go at once (feedback.c); the worker moves the folders to the Recycle Bin.
-                feedback_remove(push_task(TASK_REMOVE, str8_list_join(fa, &plan.keys, str8_lit("\n"))), &plan.keys);
-                for (String8Node *n = plan.keys.first; n; n = n->next) keyset_remove(&app.selected, n->string);
-                keyset_clear(&app.removing);
-            }
-
-            F32 tx = bar.x0 + pad, tw = gb.x0 - 16 * s - tx, ly = bar.y0 + pad + (line - ui.font.bold->line_height) * 0.5f;
-            String8 what = str8_pushf(fa, "Remove %.*s?", S8F(str8_list_join(fa, &plan.chosen, str8_lit(", "))));
-            f_draw_text(ui.font.bold, tx, ly, what, C_TEXT, tw);
-            ly += line;
-            if (plan.deps.count) {
-                if (ui_checkbox(str8_lit("with dependencies"), tx, ly + ui.font.normal->line_height * 0.5f, app.remove_with_deps)) app.remove_with_deps = !app.remove_with_deps;
-                String8 d = str8_pushf(fa, "Also remove %llu dependenc%s nothing else needs: %.*s", plan.deps.count,
-                                       plan.deps.count == 1 ? "y" : "ies", S8F(str8_list_join(fa, &plan.deps, str8_lit(", "))));
-                f_draw_text(ui.font.normal, tx + 26 * s, ly, d, C_DIM, tw - 26 * s);
-                ly += line;
-            }
-            if (plan.broken.count) {
-                String8 b = str8_pushf(fa, "These stay installed but need what you're removing: %.*s", S8F(str8_list_join(fa, &plan.broken, str8_lit(", "))));
-                f_draw_text(ui.font.normal, tx, ly, b, C_ERROR, tw);
-            }
-            content_top = bar.y1 + 12 * s;
-        }
-    }
 
     //- Content panel
     F32 status_h = 30 * s;
@@ -397,6 +356,7 @@ static B32 app_frame(void)
     if (app.viewer_open) animating |= draw_viewer();
     if (app.changes_open) animating |= draw_changes();
     if (app.settings_open) draw_settings();
+    if (app.removing.count) animating |= draw_remove();
     if (app.init_ms == 0) app.init_ms = (F64)(os_now_us() - app.t_start) / 1000.0;
     return animating;
 }

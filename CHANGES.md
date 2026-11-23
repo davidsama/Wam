@@ -13,6 +13,8 @@
 - **A status line in plain language**: how many addons are installed, how many updates are ready and
   when wam last checked. Frame and startup times are off unless you turn them on in Settings.
 - **A new name and icon**: a drawn wordmark next to the theme's emblem, and a matching app icon.
+- **Removing** asks in a popup, once for however many addons you've ticked, instead of in a bar above the
+  list.
 - **Keyboard**: Tab and Shift+Tab move between buttons, tabs and checkboxes, and Enter or Space clicks.
 
 ## 1.2.0

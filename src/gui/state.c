@@ -261,7 +261,7 @@ typedef struct App {
     U32 offer_count;        // of those, how many still need their page opened (the status bar offers it)
     UI_Scroll scroll[VIEW_COUNT];
     KeySet selected;        // checked rows
-    KeySet removing;        // rows waiting for the remove confirmation bar
+    KeySet removing;        // what the removal popup asks about (empty: it's closed)
     // What the user just asked for shows at once, before the worker gets to it (feedback.c):
     KeySet gone;            // rows being removed: hidden until that task is done (back if it failed)
     U32 gone_task;
@@ -271,7 +271,8 @@ typedef struct App {
     U32 installing_count;
     U32 task_ids;           // the last queued task's id
     U32 tasks_done;         // the last finished one's
-    B32 remove_with_deps;   // checkbox in that bar
+    B32 remove_with_deps;   // the removal popup's checkbox
+    B32 remove_fresh;       // it opened this frame
     UI_TextBuf query;       // the Get addons field
     // The settings popup (settings.c)
     B32 settings_open, settings_fresh; // fresh: opened this frame (by a click it mustn't see)
@@ -379,6 +380,7 @@ static void worker_status_cb(void *user, String8 msg) { (void)user; worker_set_s
 // The queued task the worker is running, and how far an install in it is (thousandths; -1: under
 // way, how far unknown). Written by the worker, read by the UI for the progress bars (feedback.c).
 static volatile S32 work_task, work_permille = -1;
+static volatile S32 work_finished; // the last queued task it finished
 
 static void worker_progress_cb(void *user, F32 fraction)
 {

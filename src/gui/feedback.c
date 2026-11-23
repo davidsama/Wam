@@ -37,6 +37,9 @@ static void feedback_remove(U32 task, String8List *keys)
     app.gone_task = task;
 }
 
+// The row is being removed.
+static B32 row_hidden(String8 key) { return app.gone.count && keyset_has(&app.gone, key); }
+
 static void feedback_update(U32 task, String8List *keys)
 {
     if (!task) return;
