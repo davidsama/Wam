@@ -693,6 +693,52 @@ static B32 tar_extract_to(Mgr *m, Arena *s, String8 data, String8 archive_path, 
     return 1;
 }
 
+static B32 (*mgr_move)(String8 from, String8 to) = os_move; // (tests make some moves fail)
+
+// Moves the folders set aside in `old` back into AddOns. One that can't be moved stays in `old`,
+// which then holds the only copy: *keep_old is set, and the error says where it is.
+static void mgr_put_back(Mgr *m, Arena *s, String8 old, String8List *moved, B32 *keep_old, String8 why)
+{
+    String8List stuck = { 0 };
+    for (String8Node *n = moved->first; n; n = n->next) {
+        if (!mgr_move(path_join(s, old, n->string), path_join(s, m->addons_dir, n->string))) str8_list_push(s, &stuck, n->string);
+    }
+    if (!stuck.count) { mgr_fail(m, "%.*s", S8F(why)); return; }
+    *keep_old = 1;
+    mgr_fail(m, "%.*s. Could not put back %.*s either: the previous version is kept in %.*s",
+             S8F(why), S8F(str8_list_join(s, &stuck, str8_lit(", "))), S8F(old));
+}
+
+// Replaces the folders `tops` in AddOns with the ones in `staging`; the previous ones end up in `old`.
+// On failure everything is put back; *keep_old: some of it couldn't be, so `old` must not be deleted.
+static B32 mgr_swap_in(Mgr *m, Arena *s, String8 staging, String8 old, String8List *tops, B32 *keep_old)
+{
+    // Move existing folders aside. If any is locked, put the others back.
+    String8List moved = { 0 };
+    for (String8Node *n = tops->first; n; n = n->next) {
+        String8 dst = path_join(s, m->addons_dir, n->string);
+        if (!os_dir_exists(dst) && !os_is_link(dst)) continue;
+        if (!mgr_move(dst, path_join(s, old, n->string))) {
+            mgr_put_back(m, s, old, &moved, keep_old, str8_pushf(s, "could not replace %.*s - is WoW or another program using it?", S8F(n->string)));
+            return 0;
+        }
+        str8_list_push(s, &moved, n->string);
+    }
+
+    // Move the new folders in. If one can't be, take the others out again (back to staging: a move
+    // leaves nothing half-deleted in the way) and put the previous ones back.
+    for (String8Node *n = tops->first; n; n = n->next) {
+        if (mgr_move(path_join(s, staging, n->string), path_join(s, m->addons_dir, n->string))) continue;
+        for (String8Node *r = tops->first; r != n; r = r->next) {
+            String8 dst = path_join(s, m->addons_dir, r->string);
+            if (!mgr_move(dst, path_join(s, staging, r->string))) os_delete_tree(dst);
+        }
+        mgr_put_back(m, s, old, &moved, keep_old, str8_pushf(s, "could not install %.*s", S8F(n->string)));
+        return 0;
+    }
+    return 1;
+}
+
 // Installs a zip / rar / 7z archive into AddOns: extract to a staging folder, move the old
 // folders aside, move the new ones in, and roll back if any step fails.
 static B32 mgr_install_archive(Mgr *m, String8 data, String8List *out_folders)
@@ -700,7 +746,7 @@ static B32 mgr_install_archive(Mgr *m, String8 data, String8List *out_folders)
     m->unpacked = (KnownHashes){ 0 }; // (a zip fills it in: its files' MD5s)
     Temp scratch = scratch_begin(m->arena);
     Arena *s = scratch.arena;
-    B32 ok = 0;
+    B32 ok = 0, keep_old = 0;
     ArchiveKind kind = archive_kind(data);
     if (kind == ARCHIVE_UNKNOWN) { mgr_fail(m, "the file isn't a zip, rar or 7z archive"); scratch_end(scratch); return 0; }
 
@@ -715,35 +761,14 @@ static B32 mgr_install_archive(Mgr *m, String8 data, String8List *out_folders)
                   : tar_extract_to(m, s, data, archive_path, staging, &tops, kind == ARCHIVE_RAR ? "RAR" : "7z");
     if (!extracted) goto cleanup;
 
-    // Move existing folders aside. If any is locked, put the others back.
-    String8List moved = { 0 };
-    for (String8Node *n = tops.first; n; n = n->next) {
-        String8 dst = path_join(s, m->addons_dir, n->string);
-        if (!os_dir_exists(dst) && !os_is_link(dst)) continue;
-        if (!os_move(dst, path_join(s, old, n->string))) {
-            for (String8Node *r = moved.first; r; r = r->next) os_move(path_join(s, old, r->string), path_join(s, m->addons_dir, r->string));
-            mgr_fail(m, "could not replace %.*s - is WoW or another program using it?", S8F(n->string));
-            goto cleanup;
-        }
-        str8_list_push(s, &moved, n->string);
-    }
-
-    // Move the new folders in.
-    for (String8Node *n = tops.first; n; n = n->next) {
-        if (!os_move(path_join(s, staging, n->string), path_join(s, m->addons_dir, n->string))) {
-            for (String8Node *r = tops.first; r != n; r = r->next) os_delete_tree(path_join(s, m->addons_dir, r->string));
-            for (String8Node *r = moved.first; r; r = r->next) os_move(path_join(s, old, r->string), path_join(s, m->addons_dir, r->string));
-            mgr_fail(m, "could not install %.*s", S8F(n->string));
-            goto cleanup;
-        }
-    }
+    if (!mgr_swap_in(m, s, staging, old, &tops, &keep_old)) goto cleanup;
 
     ok = 1;
     memset(out_folders, 0, sizeof(*out_folders));
     for (String8Node *n = tops.first; n; n = n->next) str8_list_push(m->arena, out_folders, str8_copy(m->arena, n->string));
 
 cleanup:
-    os_delete_tree(old);
+    if (!keep_old) os_delete_tree(old);
     os_delete_tree(staging);
     os_delete_tree(archive_path);
     scratch_end(scratch);
@@ -1140,12 +1165,43 @@ static B32 mgr_refresh_latest(Mgr *m, String8List *only)
 
 static String8 mgr_flavor_dir(Arena *a, Mgr *m) { return path_dirname(path_dirname(m->addons_dir)); } // ...\_retail_
 
-static int str8_ptr_compare(const void *pa, const void *pb)
+#define WTF_BACKUP_DATED 14 // the length of "WTF-YYYY-MM-DD"
+
+// A name wam gives its backups, WTF-YYYY-MM-DD.zip or WTF-YYYY-MM-DD-<n>.zip: only these are ever
+// deleted, not zips the user keeps next to them.
+static B32 wtf_backup_name(String8 f)
+{
+    char *form = "WTF-dddd-dd-dd";
+    if (f.size < WTF_BACKUP_DATED + 4 || !str8_ends_with(f, str8_lit(".zip"), 1)) return 0;
+    for (U64 i = 0; i < WTF_BACKUP_DATED; i += 1) {
+        if (form[i] == 'd' ? (f.str[i] < '0' || f.str[i] > '9') : f.str[i] != (U8)form[i]) return 0;
+    }
+    U64 end = f.size - 4;
+    if (end == WTF_BACKUP_DATED) return 1;
+    if (f.str[WTF_BACKUP_DATED] != '-' || end == WTF_BACKUP_DATED + 1) return 0;
+    for (U64 i = WTF_BACKUP_DATED + 1; i < end; i += 1) if (f.str[i] < '0' || f.str[i] > '9') return 0;
+    return 1;
+}
+
+// Oldest first: by date, then the day's first (no number), -2, ... -10.
+static int wtf_backup_compare(const void *pa, const void *pb)
 {
     const String8 *x = (const String8 *)pa, *y = (const String8 *)pb;
-    U64 n = Min(x->size, y->size);
-    int d = memcmp(x->str, y->str, n);
-    return d ? d : (x->size > y->size) - (x->size < y->size);
+    int d = memcmp(x->str, y->str, WTF_BACKUP_DATED);
+    if (!d) d = (x->size > y->size) - (x->size < y->size);
+    return d ? d : memcmp(x->str, y->str, x->size);
+}
+
+static void wtf_backups_prune(Arena *a, String8 dir)
+{
+    OS_FileInfoArray files = os_list_dir(a, dir);
+    String8 *zips = push_array(a, String8, files.count + 1);
+    U64 n = 0;
+    for (U64 i = 0; i < files.count; i += 1) {
+        if (!files.v[i].is_dir && wtf_backup_name(files.v[i].name)) zips[n++] = files.v[i].name;
+    }
+    qsort(zips, n, sizeof(String8), wtf_backup_compare);
+    for (U64 i = 0; i + WTF_BACKUPS_KEPT < n; i += 1) os_delete_tree(path_join(a, dir, zips[i]));
 }
 
 // Makes today's backup unless it exists (always a new one with `always`). *out_path: the zip, or
@@ -1183,17 +1239,7 @@ static B32 mgr_backup_wtf(Mgr *m, B32 always, String8 *out_path)
     }
     if (!os_move(tmp, zip)) { os_delete_tree(tmp); return mgr_fail(m, "could not save the WTF backup to %.*s", S8F(zip)); }
 
-    // Keep the newest few. Names sort by date.
-    OS_FileInfoArray files = os_list_dir(a, dir);
-    String8 *zips = push_array(a, String8, files.count + 1);
-    U64 n = 0;
-    for (U64 i = 0; i < files.count; i += 1) {
-        String8 f = files.v[i].name;
-        if (!files.v[i].is_dir && str8_starts_with(f, str8_lit("WTF-"), 1) && str8_ends_with(f, str8_lit(".zip"), 1) &&
-            !str8_ends_with(f, str8_lit(".partial.zip"), 1)) zips[n++] = f;
-    }
-    qsort(zips, n, sizeof(String8), str8_ptr_compare);
-    for (U64 i = 0; i + WTF_BACKUPS_KEPT < n; i += 1) os_delete_tree(path_join(a, dir, zips[i]));
+    wtf_backups_prune(a, dir);
 
     if (out_path) *out_path = zip;
     return 1;

@@ -1,6 +1,6 @@
 @echo off
 setlocal
-rem Usage: build.bat [test | release]
+rem Usage: build.bat [test | asan | release]   (asan: the tests, with AddressSanitizer)
 rem Needs the C/C++ tools set up in this window: run vsenv first (tools\vsenv.bat, copied to a folder
 rem on PATH), once per window.
 
@@ -9,7 +9,7 @@ if errorlevel 1 goto no_cl
 
 set COMMON=/nologo /std:c11 /utf-8 /D_CRT_SECURE_NO_WARNINGS /W4 /wd4100 /wd4201 /wd4204 /wd4505 /wd4127 /Zi /I..\src /I.
 set MODE=/Od
-if "%1"=="release" set MODE=/O2 /GS- /DNDEBUG
+if "%1"=="release" set MODE=/O2 /DNDEBUG
 rem /PDBALTPATH: the exe names its .pdb without this folder (no build paths in what ships).
 set LINK=/INCREMENTAL:NO /OPT:REF /PDBALTPATH:%%_PDB%%
 
@@ -20,8 +20,13 @@ rem The GUI's CurseForge download window uses WebView2: fetch its SDK header and
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\fetch_webview2.ps1 build\webview2 || goto fail_nopop
 pushd build
 
-if "%1"=="test" (
-    cl %COMMON% /Od ..\src\main_test.c /Fe:wamtest.exe /link %LINK% /SUBSYSTEM:CONSOLE winhttp.lib shell32.lib version.lib ole32.lib crypt32.lib advapi32.lib || goto fail
+set TESTS=
+set TESTFLAGS=
+if "%1"=="test" set TESTS=1
+if "%1"=="asan" set TESTS=1
+if "%1"=="asan" set TESTFLAGS=/fsanitize=address
+if defined TESTS (
+    cl %COMMON% /Od %TESTFLAGS% ..\src\main_test.c /Fe:wamtest.exe /link %LINK% /SUBSYSTEM:CONSOLE winhttp.lib shell32.lib version.lib ole32.lib crypt32.lib advapi32.lib || goto fail
     .\wamtest.exe || goto fail
     popd
     exit /b 0

@@ -50,6 +50,7 @@ static U32 inf_bits(Inflate *s, U32 need)
 static int huff_build(Huffman *h, U8 *lengths, int n)
 {
     memset(h->count, 0, sizeof(h->count));
+    memset(h->fast, 0, sizeof(h->fast)); // before any return: huff_decode reads it even when there are no codes
     for (int i = 0; i < n; i += 1) h->count[lengths[i]] += 1;
     if (h->count[0] == n) return 0;
     int left = 1;
@@ -64,7 +65,6 @@ static int huff_build(Huffman *h, U8 *lengths, int n)
     for (int i = 0; i < n; i += 1) if (lengths[i]) h->symbol[offs[lengths[i]]++] = (S16)i;
 
     // Canonical codes are assigned in (length, symbol) order, which is the order of symbol[].
-    memset(h->fast, 0, sizeof(h->fast));
     int code = 0, index = 0;
     for (int len = 1; len < 16; len += 1) {
         for (int k = 0; k < h->count[len]; k += 1, code += 1) {
@@ -305,6 +305,10 @@ static B32 zip_open(Arena *a, String8 data, ZipArchive *out)
 }
 
 
+// Sizes come from the archive, so they're checked before allocating: no addon file is near the limit,
+// and DEFLATE can't shrink data more than 1032 times.
+#define ZIP_ENTRY_MAX MB(512)
+
 // Returns the entry's bytes, or ok=0 on corrupt data / unsupported method.
 static String8 zip_read(Arena *a, ZipArchive *z, ZipEntry *e, B32 *ok)
 {
@@ -313,6 +317,7 @@ static String8 zip_read(Arena *a, ZipArchive *z, ZipEntry *e, B32 *ok)
     if ((U64)e->local_offset + 30 > d.size || rd32(d.str + e->local_offset) != 0x04034b50) return str8(0, 0);
     U64 start = (U64)e->local_offset + 30 + rd16(d.str + e->local_offset + 26) + rd16(d.str + e->local_offset + 28);
     if (start + e->comp_size > d.size) return str8(0, 0);
+    if (e->size > ZIP_ENTRY_MAX || e->size > (U64)e->comp_size * 1032) return str8(0, 0);
     String8 comp = str8(d.str + start, e->comp_size);
     U8 *out = push_array_nz(a, U8, (U64)e->size + 1);
     if (e->method == 0) {

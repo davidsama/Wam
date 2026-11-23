@@ -25,6 +25,7 @@ vsenv               once per window: sets up the C/C++ tools (tools\vsenv.bat)
 build.bat           debug
 build.bat release   optimized
 build.bat test      build + run offline unit tests (wamtest.exe)
+build.bat asan      the same tests with AddressSanitizer
 ```
 
 `build.bat` doesn't set up the compiler itself (that took a couple of seconds on every build): run
@@ -194,7 +195,7 @@ identifies itself with the user agent `wam/<version> (WoW addon manager)`.
 - **Game version**: read from the FileVersion string of the flavor's `Wow*.exe` (e.g. Forever 1.60.1).
 - **Long paths**: file operations use `\\?\` paths, so deep `Libs\` trees past 260 characters work.
 - **Choosing a file**: from the mod's `latestFilesIndexes`, same major game version as the client is required (1.x Era/Forever, 2.x Anniversary, 5.x Classic, 12.x Retail; Retail falls back to an older retail major, never to a Classic file). Then release > beta > alpha, then same minor, then newest.
-- **Installing**: download → extract to `AddOns\.wam-staging-*` → move old folders aside → move new ones in → delete old. Any failure rolls back. Folder moves retry briefly because antivirus scanners hold new files open. Archive paths with `..`, drive letters or absolute paths are rejected.
+- **Installing**: download → extract to `AddOns\.wam-staging-*` → move old folders aside → move new ones in → delete old. Any failure rolls back; if a folder can't be moved back, its previous version is kept in `AddOns\.wam-old-*` and the error says so. Folder moves retry briefly because antivirus scanners hold new files open. Archive paths with `..`, drive letters or absolute paths are rejected.
 - **Download folders**: the Windows Downloads known folder, plus custom download folders set in Chrome, Edge, Brave, Vivaldi, Opera (Preferences → `download.default_directory`) or Firefox (`prefs.js` → `browser.download.dir`). Only these local settings files are read. An archive counts as an addon if it has `Folder/Folder.toc` entries; zips are inspected by reading only their central directory and `.toc` entries (about 1 ms, even for huge unrelated zips), RAR/7z via `tar.exe`, cached per file.
 - **RAR / 7z**: detected by content (downloads too; some old WoWInterface uploads are .rar) and extracted with `%SystemRoot%\System32\tar.exe` (bsdtar/libarchive, Windows 10 1803+). Entry names are validated first; archives with symbolic links, password protection or extraction errors are refused, and the extracted tree is checked for links before anything moves into AddOns.
 - **Resizing**: each new window size is drawn immediately (in `WM_SIZE`, not on a later repaint), and the swapchain uses the bitblt ("discard") model rather than flip. While an edge is dragged, the compositor holds each new size back until the app presents a frame of that size; with flip-model swapchains that handshake cost about two refreshes per step in real drags (66–82 fps at 144 Hz, with content trailing the edge), with the bitblt model the window follows at the full refresh rate (138–139 fps). `WAM_TEST_FRAME_LOG=<file>` logs every frame's resize, draw and present times; the status line shows the frames drawn in the last second when Settings' performance numbers are on.

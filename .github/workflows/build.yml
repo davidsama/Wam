@@ -1,0 +1,27 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: cmd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Tests
+        run: call tools\vsenv.bat --here && call .\build.bat test
+      - name: Tests with AddressSanitizer
+        run: call tools\vsenv.bat --here && call .\build.bat asan
+      - name: Release build (no CurseForge key)
+        run: call tools\vsenv.bat --here && call .\build.bat release

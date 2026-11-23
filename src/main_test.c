@@ -1,4 +1,4 @@
-// main_test.c - wamtest.exe: offline unit tests (JSON, file picking, zip safety).
+// main_test.c - wamtest.exe: offline unit tests (JSON, file picking, zip safety, installing).
 // Build with `build.bat test`.
 
 #define WIN32_LEAN_AND_MEAN
@@ -698,6 +698,221 @@ static void test_tukui(Arena *a)
     CHECK(mgr_has_update(&e));
 }
 
+//- Installing: failures must never lose the version that was there
+
+static String8 test_dir(Arena *a, char *name)
+{
+    WCHAR tmp16[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp16);
+    return path_join(a, os_str8_from_16(a, (U16 *)tmp16, wcslen(tmp16)), str8_pushf(a, "%s-%llu", name, os_now_us()));
+}
+
+static B32 file_is(Arena *a, String8 dir, char *rel, char *text)
+{
+    return str8_match(os_read_file(a, path_join(a, dir, str8_cstring(rel))), str8_cstring(text), 0);
+}
+
+static int moves, moves_fail_from; // fail every move from this one on (1 = the first)
+static B32 failing_move(String8 from, String8 to) { moves += 1; return moves < moves_fail_from && os_move(from, to); }
+
+// AddOns has A and B at "old"; staging has both at "new" (A only, without `with_b`).
+static Mgr *swap_setup(Arena *a, String8 dir, B32 with_b, String8 *staging, String8 *old, String8List *tops)
+{
+    String8 addons = path_join(a, dir, str8_lit("Interface\\AddOns"));
+    *staging = path_join(a, addons, str8_lit(".staging"));
+    *old = path_join(a, addons, str8_lit(".old"));
+    CHECK(os_make_dirs(*old));
+    char *names[] = { "A", "B" };
+    memset(tops, 0, sizeof(*tops));
+    for (int i = 0; i < 2; i += 1) {
+        String8 f = str8_cstring(names[i]), file = str8_lit("x.lua");
+        CHECK(os_make_dirs(path_join(a, addons, f)) && os_write_file(path_join(a, path_join(a, addons, f), file), str8_lit("old")));
+        if (!i || with_b) CHECK(os_make_dirs(path_join(a, *staging, f)) && os_write_file(path_join(a, path_join(a, *staging, f), file), str8_lit("new")));
+        str8_list_push(a, tops, f);
+    }
+    return mgr_open(a, addons, str8(0, 0));
+}
+
+static void test_swap(Arena *a)
+{
+    String8 staging, old;
+    String8List tops;
+    B32 keep = 0;
+
+    String8 dir = test_dir(a, "wamswap");
+    Mgr *m = swap_setup(a, dir, 1, &staging, &old, &tops);
+    CHECK(mgr_swap_in(m, a, staging, old, &tops, &keep) && !keep);
+    CHECK(file_is(a, m->addons_dir, "A\\x.lua", "new") && file_is(a, m->addons_dir, "B\\x.lua", "new"));
+    os_delete_tree(dir);
+
+    // B's new folder is missing: A's new one comes out again, and both old ones are back.
+    dir = test_dir(a, "wamswap");
+    m = swap_setup(a, dir, 0, &staging, &old, &tops);
+    CHECK(!mgr_swap_in(m, a, staging, old, &tops, &keep) && !keep);
+    CHECK(file_is(a, m->addons_dir, "A\\x.lua", "old") && file_is(a, m->addons_dir, "B\\x.lua", "old"));
+    os_delete_tree(dir);
+
+    // A file open in B keeps it from being moved aside: A is put back.
+    dir = test_dir(a, "wamswap");
+    m = swap_setup(a, dir, 1, &staging, &old, &tops);
+    HANDLE lock = CreateFileW((WCHAR *)os_str16_from_8(a, path_join(a, m->addons_dir, str8_lit("B\\x.lua"))).str, GENERIC_READ,
+                              FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+    CHECK(lock != INVALID_HANDLE_VALUE);
+    CHECK(!mgr_swap_in(m, a, staging, old, &tops, &keep) && !keep);
+    CloseHandle(lock);
+    CHECK(file_is(a, m->addons_dir, "A\\x.lua", "old") && file_is(a, m->addons_dir, "B\\x.lua", "old"));
+    os_delete_tree(dir);
+
+    // Whichever move fails first, with every later one failing too: each old folder is still in AddOns or in `old`.
+    for (int fail = 1; fail <= 4; fail += 1) {
+        dir = test_dir(a, "wamswap");
+        m = swap_setup(a, dir, 1, &staging, &old, &tops);
+        moves = 0; moves_fail_from = fail; keep = 0;
+        mgr_move = failing_move;
+        CHECK(!mgr_swap_in(m, a, staging, old, &tops, &keep));
+        mgr_move = os_move;
+        CHECK(keep == (fail > 1));
+        CHECK(file_is(a, m->addons_dir, "A\\x.lua", "old") || (keep && file_is(a, old, "A\\x.lua", "old")));
+        CHECK(file_is(a, m->addons_dir, "B\\x.lua", "old") || (keep && file_is(a, old, "B\\x.lua", "old")));
+        CHECK(!keep || str8_find(m->error, 0, old, 0) < m->error.size); // says where it is
+        os_delete_tree(dir);
+    }
+}
+
+// Makes a zip of Foo\Foo.toc in `dir` (with Windows' tar).
+static String8 test_zip(Arena *a, String8 dir)
+{
+    String8 src = path_join(a, dir, str8_lit("src")), zip = path_join(a, dir, str8_lit("foo.zip"));
+    String8 tar = path_join(a, os_system_dir(a), str8_lit("tar.exe"));
+    U8 *text = push_array(a, U8, 4096);
+    for (U32 i = 0; i < 4096; i += 1) text[i] = (U8)('a' + (i * i / 7) % 23); // compresses, but not to nothing
+    CHECK(os_make_dirs(path_join(a, src, str8_lit("Foo"))) && os_write_file(path_join(a, src, str8_lit("Foo\\Foo.toc")), str8(text, 4096)));
+    OS_RunResult r = os_run(a, tar, str8_pushf(a, "\"%.*s\" -a -c -f \"%.*s\" -C \"%.*s\" Foo", S8F(tar), S8F(zip), S8F(src)), 60000);
+    CHECK(r.started && r.exit_code == 0);
+    return os_read_file(a, zip);
+}
+
+static ZipEntry *first_file(ZipArchive *z)
+{
+    for (U64 i = 0; i < z->count; i += 1) if (!z->v[i].is_dir) return &z->v[i];
+    return 0;
+}
+
+static void test_corrupt_install(Arena *a)
+{
+    // A corrupt archive leaves the installed addon as it was, and no temporary folders.
+    String8 dir = test_dir(a, "wambad"), addons = path_join(a, dir, str8_lit("Interface\\AddOns"));
+    CHECK(os_make_dirs(path_join(a, addons, str8_lit("Foo"))) && os_write_file(path_join(a, addons, str8_lit("Foo\\Foo.toc")), str8_lit("old")));
+    String8 zip = test_zip(a, dir);
+    ZipArchive z;
+    CHECK(zip_open(a, zip, &z));
+    ZipEntry *e = first_file(&z);
+    CHECK(e != 0);
+    if (!e) return;
+    B32 ok;
+    CHECK(zip_read(a, &z, e, &ok).size == 4096 && ok);
+    ZipEntry huge = *e;
+    huge.size = 0xFFFFFFFF; // a false size fails before anything is allocated
+    zip_read(a, &z, &huge, &ok);
+    CHECK(!ok);
+    U64 at = e->local_offset + 30 + rd16(zip.str + e->local_offset + 26) + rd16(zip.str + e->local_offset + 28);
+    zip.str[at + e->comp_size / 2] ^= 0x55;
+    Mgr *m = mgr_open(a, addons, str8(0, 0));
+    String8List folders = { 0 };
+    CHECK(!mgr_install_archive(m, zip, &folders));
+    CHECK(file_is(a, addons, "Foo\\Foo.toc", "old") && os_list_dir(a, addons).count == 1);
+    os_delete_tree(dir);
+}
+
+static void test_backup(Arena *a)
+{
+    String8 dir = test_dir(a, "wamwtf"), addons = path_join(a, dir, str8_lit("Interface\\AddOns"));
+    CHECK(os_make_dirs(addons) && os_make_dirs(path_join(a, dir, str8_lit("WTF"))));
+    CHECK(os_write_file(path_join(a, dir, str8_lit("WTF\\Config.wtf")), str8_lit("SET x 1")));
+    Mgr *m = mgr_open(a, addons, str8(0, 0));
+    String8 zip, again;
+    CHECK(mgr_backup_wtf(m, 0, &zip) && os_file_exists(zip));
+    CHECK(mgr_backup_wtf(m, 0, &again) && !again.size); // once a day
+    os_delete_tree(dir);
+
+    // Only wam's own backups are pruned, oldest first: a day's -2 and -10 are newer than its first.
+    dir = test_dir(a, "wamwtf");
+    CHECK(os_make_dirs(dir));
+    char *names[] = { "WTF-2026-01-01.zip", "WTF-2026-01-02.zip", "WTF-2026-01-03.zip", "WTF-2026-01-03-2.zip", "WTF-2026-01-03-10.zip",
+                      "WTF-2026-01-04.zip", "WTF-2026-01-05.zip", "WTF-2026-01-06.zip", "WTF-2026-01-07.zip", "WTF-2026-01-08.zip",
+                      "WTF-mine.zip", "WTF-2025-01-01-before raid.zip" };
+    for (int i = 0; i < (int)ArrayCount(names); i += 1) CHECK(os_write_file(path_join(a, dir, str8_cstring(names[i])), str8_lit("x")));
+    wtf_backups_prune(a, dir);
+    for (int i = 0; i < (int)ArrayCount(names); i += 1) CHECK(!!os_file_exists(path_join(a, dir, str8_cstring(names[i]))) == (i >= 3));
+    os_delete_tree(dir);
+}
+
+//- Fuzzing: damaged input must fail, not read or write out of bounds (`build.bat asan` sees those).
+// The same inputs every run; each is an exact-size heap copy, so a byte too far is caught.
+
+static U32 fuzz_state = 2463534242u;
+static U32 fuzz_rand(void) { fuzz_state ^= fuzz_state << 13; fuzz_state ^= fuzz_state >> 17; fuzz_state ^= fuzz_state << 5; return fuzz_state; }
+
+static String8 fuzz_mutate(String8 in)
+{
+    U64 size = fuzz_rand() % 4 ? in.size : fuzz_rand() % (in.size + 1);
+    U8 *p = (U8 *)malloc(size ? size : 1);
+    memcpy(p, in.str, size);
+    for (U32 k = fuzz_rand() % 8; size && k; k -= 1) p[fuzz_rand() % size] = (U8)fuzz_rand();
+    return str8(p, size);
+}
+
+static void test_fuzz(Arena *a)
+{
+    // Code lengths that are all zero: nothing may be decoded with them, whatever the stack held.
+    U8 empty[64] = { 0 }, none[19] = { 0 };
+    Huffman h;
+    memset(&h, 0xFF, sizeof(h));
+    CHECK(huff_build(&h, none, 19) == 0);
+    Inflate in = { 0 };
+    in.in = empty; in.in_len = sizeof(empty);
+    CHECK(huff_decode(&in, &h) == -1);
+
+    String8 dir = test_dir(a, "wamfuzz");
+    CHECK(os_make_dirs(dir));
+    String8 zip = test_zip(a, dir);
+    os_delete_tree(dir);
+    ZipArchive z;
+    CHECK(zip_open(a, zip, &z));
+    ZipEntry *e = first_file(&z);
+    CHECK(e != 0);
+    if (!e) return;
+    U64 at = e->local_offset + 30 + rd16(zip.str + e->local_offset + 26) + rd16(zip.str + e->local_offset + 28);
+    String8 comp = str8(zip.str + at, e->comp_size);
+    String8 json = str8_lit("{\"a\":[1,-2.5e3,true,null,{\"s\":\"x\\\"\\\\\\u00e9\\ud83d\\ude00\"}],\"o\":{\"k\":\"v\",\"e\":[]}}");
+    for (int i = 0; i < 20000; i += 1) {
+        Temp t = temp_begin(a);
+        String8 bytes = fuzz_mutate(zip);
+        ZipArchive fz;
+        if (zip_open(a, bytes, &fz)) {
+            for (U64 k = 0; k < fz.count && k < 16; k += 1) {
+                B32 ok;
+                zip_name_is_safe(fz.v[k].name);
+                Temp r = temp_begin(a);
+                zip_read(a, &fz, &fz.v[k], &ok);
+                temp_end(r);
+            }
+        }
+        free(bytes.str);
+
+        bytes = fuzz_mutate(comp);
+        U8 *out = (U8 *)malloc(e->size);
+        inflate_raw(bytes, out, e->size);
+        free(out);
+        free(bytes.str);
+
+        bytes = fuzz_mutate(json);
+        json_parse(a, bytes);
+        free(bytes.str);
+        temp_end(t);
+    }
+}
+
 int main(void)
 {
     Arena *a = arena_alloc(GB(1));
@@ -718,6 +933,10 @@ int main(void)
     test_twins(a);
     test_markup(a);
     test_zip_names();
+    test_swap(a);
+    test_corrupt_install(a);
+    test_backup(a);
+    test_fuzz(a);
     printf("%d/%d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;
 }
