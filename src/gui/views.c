@@ -726,26 +726,47 @@ static void browse_order(F32 row_h)
     app.order_valid = 1;
 }
 
+// The CurseForge category the list is filtered by (0: all).
+static S64 browse_cf_category(void)
+{
+    return app.subcategory >= 0 ? cat_subcategories[app.subcategory].cf_id : app.category >= 0 ? cat_categories[app.category].cf_id : 0;
+}
+
 // Asks the suggestion lane for one page of (sort, query) results.
 static void request_page(int sort, String8 q, U64 index)
 {
     Task t = make_task(TASK_SUGGEST, q, 0, app.flavor);
     t.sort = sort;
     t.index = index;
+    t.category = browse_cf_category();
     dispatch_task(t);
     app.more_asked = app.suggest_asked;
+    app.more_waiting = 1;
+    app.more_rows = app.order_count;
 }
+
+#define MORE_EMPTY_MAX 6
 
 // The paging state follows the current sort + query.
 static void paging_sync(void)
 {
+    // Other filters show other rows: pages may be worth asking for again.
+    U64 filters = ((U64)(app.category + 1) << 40) ^ ((U64)(app.subcategory + 1) << 24) ^ ((U64)app.src_hidden << 1) ^ (U64)(app.hide_installed != 0);
+    if (filters != app.more_filters) { app.more_filters = filters; app.more_empty = 0; app.more_waiting = 0; }
     String8 q = browse_query();
     int sort = browse_sort();
-    if (sort == app.more_sort && str8_match(q, str8_cstring(app.more_query), 0)) return;
+    S64 category = browse_cf_category();
+    if (sort == app.more_sort && category == app.more_category && str8_match(q, str8_cstring(app.more_query), 0)) return;
+    // The same search in another category: ask it again there (its first page isn't one of these).
+    B32 again = q.size && category != app.more_category;
     app.more_sort = sort;
+    app.more_category = category;
     copy_cstr(app.more_query, sizeof(app.more_query), q);
-    app.more_index = q.size ? 0 : sort_prefetched[sort]; // browsing starts after what the catalog prefetched
+    app.more_index = q.size || category ? 0 : sort_prefetched[sort]; // browsing it all starts after what the catalog prefetched
     app.more_done = !app.api_key.size;
+    app.more_empty = 0;
+    app.more_waiting = 0;
+    if (again && !suggest_due_ms) { app.sugg_last_query[0] = 0; suggest_due_ms = os_now_ms(); wm_timer_start(suggest_timer, 1); }
 }
 
 // Typing changed the query: back to the top, and ask the network once typing pauses.
@@ -781,7 +802,7 @@ static void search_result_arrived(SearchSnap *ss)
 {
     if (ss->flavor != app.flavor || ss->gen != app.root_gen) return;
     catalog_merge(ss->v, ss->count);
-    if (ss->sort == app.more_sort && str8_match(ss->query, str8_cstring(app.more_query), 0)) {
+    if (ss->sort == app.more_sort && ss->category == app.more_category && str8_match(ss->query, str8_cstring(app.more_query), 0)) {
         if (ss->failed || ss->cf_count < CF_PAGE_SIZE) app.more_done = 1;
         app.more_index = Max(app.more_index, ss->index + CF_PAGE_SIZE);
         if (app.more_index > CF_INDEX_MAX) app.more_done = 1;
@@ -1463,13 +1484,19 @@ static B32 draw_search(Rect area)
     r_rect(rect(area.x0, list.y0 - ui_px(), area.x1, list.y0), C_BORDER, 0, 0, 0);
     U64 count = app.order_count;
     B32 paging = app.suggest_served < app.more_asked;
+    if (app.more_waiting && !paging) { // the page has come: did it add anything?
+        app.more_waiting = 0;
+        app.more_empty = count > app.more_rows ? 0 : app.more_empty + 1;
+    }
+    B32 more_shown = !app.more_done && !(app.src_hidden & (1u << SRC_CURSEFORGE)) && (!browse_query().size || app.more_index > 0) && app.more_category == browse_cf_category();
+    B32 more_link = more_shown && !paging && app.more_empty >= MORE_EMPTY_MAX && app.suggest_served >= app.suggest_asked; // asking on is up to the user
 
     // Keep the selected row in view.
     if (app.sel_reveal && app.sel_index >= 0) {
         ui_scroll_reveal(&app.scroll[VIEW_SEARCH], (F32)app.sel_index * row_h, (F32)(app.sel_index + 1) * row_h, list.y1 - list.y0);
         app.sel_reveal = 0;
     }
-    UI_List l = ui_list_begin(&app.scroll[VIEW_SEARCH], list, (S64)count, row_h, paging && count ? row_h : 0); // + a "Loading more..." row
+    UI_List l = ui_list_begin(&app.scroll[VIEW_SEARCH], list, (S64)count, row_h, (paging || more_link) && count ? row_h : 0); // + a "Loading more..." row
     animating |= l.animating;
 
     String8 q = browse_query();
@@ -1537,8 +1564,16 @@ static B32 draw_search(Rect area)
         ui_text_centered(ui.font.caption, rect(list.x0, ry, list.x1, ry + row_h), str8_lit("Loading more..."), C_FAINT);
     }
     // Near the end: the next page of this sort (CurseForge).
-    if (!app.more_done && !paging && !(app.src_hidden & (1u << SRC_CURSEFORGE)) && app.suggest_served >= app.suggest_asked && l.last + 10 >= (S64)count
-        && (q.size == 0 || app.more_index > 0) && app.catalog_served >= app.catalog_asked) {
+    if (more_link) {
+        F32 ry = count ? ui_list_row(&l, (S64)count, str8_lit("look for more")).y0 : list.y0 + 124 * s; // (under the empty list's texts)
+        String8 label = str8_lit("Look for more on CurseForge");
+        F32 tw = f_text_width(ui.font.caption, label);
+        Rect hit;
+        ui_link_text(ui.font.caption, (list.x0 + list.x1 - tw) * 0.5f, ry + (row_h - ui.font.caption->line_height) * 0.5f, label, C_ACCENT_HI, 0, &hit);
+        if (ui_mouse_in(ui.clip) && ui_clicked(hit)) { app.more_empty = 0; wm_request_frame(); }
+    }
+    if (more_shown && !paging && !app.more_waiting && app.more_empty < MORE_EMPTY_MAX && app.suggest_served >= app.suggest_asked && l.last + 10 >= (S64)count
+        && app.catalog_served >= app.catalog_asked) {
         request_page(app.more_sort, q, app.more_index);
     }
 

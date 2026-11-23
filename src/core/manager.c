@@ -1961,7 +1961,7 @@ static void wago_search_result(Mgr *m, JSON *item, SearchResult *sr)
 // One page of results. An empty query browses (Tukui's list, then CurseForge sorted by cf_sort);
 // Wago joins searches (it has no browse API), on the first page only. *cf_count: how many came
 // from CurseForge, so callers know whether there's a next page (CF_PAGE_SIZE = maybe more).
-static SearchResult *mgr_search_page(Mgr *m, String8 query, int cf_sort, U64 index, U64 *out_count, U64 *cf_count)
+static SearchResult *mgr_search_page(Mgr *m, String8 query, String8 cf_categories, int cf_sort, U64 index, U64 *out_count, U64 *cf_count)
 {
     *out_count = 0;
     if (cf_count) *cf_count = 0;
@@ -1980,7 +1980,7 @@ static SearchResult *mgr_search_page(Mgr *m, String8 query, int cf_sort, U64 ind
         else wago_error = str8_pushf(m->arena, "Wago search failed: %.*s", S8F(r.error));
     }
     if (m->api_key.size) {
-        HTTP_Result r = cf_search_page(m->arena, m->api_key, query, str8(0, 0), cf_sort, index);
+        HTTP_Result r = cf_search_page(m->arena, m->api_key, query, str8(0, 0), cf_categories, cf_sort, index);
         if (r.ok) cf = json_get(json_parse(m->arena, r.body), "data");
         else cf_error = str8_pushf(m->arena, "CurseForge search failed: %.*s", S8F(r.error));
     }
@@ -2012,5 +2012,5 @@ static SearchResult *mgr_search_page(Mgr *m, String8 query, int cf_sort, U64 ind
 
 static SearchResult *mgr_search(Mgr *m, String8 query, U64 *out_count)
 {
-    return mgr_search_page(m, query, CF_SORT_POPULARITY, 0, out_count, 0);
+    return mgr_search_page(m, query, str8(0, 0), CF_SORT_POPULARITY, 0, out_count, 0);
 }

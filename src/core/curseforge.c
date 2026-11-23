@@ -105,13 +105,15 @@ static HTTP_Result cf_get_file(Arena *a, String8 api_key, S64 mod_id, S64 file_i
 #define CF_INDEX_MAX       (10000 - CF_PAGE_SIZE) // index + pageSize may not pass 10000
 
 // GET /v1/mods/search: one page of results, newest / biggest first. An empty term lists everything
-// (browsing). Pass a slug to look up one project by its URL name.
-static HTTP_Result cf_search_page(Arena *a, String8 api_key, String8 term, String8 slug, int sort_field, U64 index)
+// (browsing). Pass a slug to look up one project by its URL name, categories ("1006,1039", ten at most) to list only theirs.
+// The term matches addons with any of its words, so a common one ("or") matches thousands.
+static HTTP_Result cf_search_page(Arena *a, String8 api_key, String8 term, String8 slug, String8 categories, int sort_field, U64 index)
 {
     Temp scratch = scratch_begin(a);
     String8 filter = slug.size ? str8_pushf(scratch.arena, "&slug=%.*s", S8F(url_encode(scratch.arena, slug)))
                    : term.size ? str8_pushf(scratch.arena, "&searchFilter=%.*s", S8F(url_encode(scratch.arena, term)))
                    : str8(0, 0);
+    if (categories.size) filter = str8_pushf(scratch.arena, "%.*s&categoryIds=%%5B%.*s%%5D", S8F(filter), S8F(categories));
     String8 path = str8_pushf(scratch.arena, "/v1/mods/search?gameId=%d%.*s&sortField=%d&sortOrder=desc&pageSize=%d&index=%llu",
                               CF_GAME_WOW, S8F(filter), sort_field, CF_PAGE_SIZE, Min(index, (U64)CF_INDEX_MAX));
     HTTP_Result r = cf_call(a, api_key, "GET", path, str8(0, 0));
@@ -121,5 +123,5 @@ static HTTP_Result cf_search_page(Arena *a, String8 api_key, String8 term, Strin
 
 static HTTP_Result cf_search(Arena *a, String8 api_key, String8 term, String8 slug)
 {
-    return cf_search_page(a, api_key, term, slug, CF_SORT_POPULARITY, 0);
+    return cf_search_page(a, api_key, term, slug, str8(0, 0), CF_SORT_POPULARITY, 0);
 }

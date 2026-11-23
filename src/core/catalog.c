@@ -365,6 +365,17 @@ static CatSubcategory cat_subcategories[] = {
 };
 #define CAT_SUBCATEGORY_COUNT ((U32)ArrayCount(cat_subcategories))
 
+// What to ask CurseForge for to get a category's addons: its id and its subcategories' (an addon may be
+// tagged with only one of those). Empty when that's more ids than it takes: then ask for all addons.
+static String8 cat_cf_query(Arena *a, S64 cf_id)
+{
+    if (!cf_id) return str8(0, 0);
+    String8List ids = { 0 };
+    str8_list_push(a, &ids, str8_pushf(a, "%lld", cf_id));
+    for (U32 i = 0; i < CAT_SUBCATEGORY_COUNT; i += 1) if (cat_subcategories[i].parent_cf_id == cf_id) str8_list_push(a, &ids, str8_pushf(a, "%d", cat_subcategories[i].cf_id));
+    return ids.count <= 10 ? str8_list_join(a, &ids, str8_lit(",")) : str8(0, 0);
+}
+
 static U32 cat_bit_for_cf(S64 cf_id)
 {
     for (U32 i = 0; i < CAT_CATEGORY_COUNT; i += 1) if (cat_categories[i].cf_id == cf_id) return 1u << i;
@@ -584,7 +595,7 @@ static void cat_fetch_one(void *user, U64 i)
     if (j->tukui) { tukui_list(j->arena, 0); j->r.ok = 1; return; }
     j->r = j->wowi ? wowi_filelist(j->arena)
          : j->wago ? wago_browse(j->arena, f->wago_key, f->cv, j->wago - 1)
-         : cf_search_page(j->arena, f->api_key, str8(0, 0), str8(0, 0), j->cf_sort, j->index);
+         : cf_search_page(j->arena, f->api_key, str8(0, 0), str8(0, 0), str8(0, 0), j->cf_sort, j->index);
 }
 
 // Fetches the whole catalog for m's flavor into c (merging). Requests run in parallel: about 60 of

@@ -584,6 +584,10 @@ static void test_rich(Arena *a)
     for (int i = 0; i < (int)ArrayCount(own); i += 1) CHECK(rich_addon_site(str8_cstring(own[i])));
     for (int i = 0; i < (int)ArrayCount(others); i += 1) CHECK(!rich_addon_site(str8_cstring(others[i])));
 
+    // A category is asked for with its subcategories, unless they're too many.
+    CHECK(text_is(cat_cf_query(a, 1006), "1006") && text_is(cat_cf_query(a, 1016), "1016,1039,1037") && text_is(cat_cf_query(a, 1023), "1023"));
+    CHECK(!cat_cf_query(a, 0).size && !cat_cf_query(a, 1020).size);
+
     // Nothing points into the source, which is freed first (a download's buffer).
     String8 src = str8_copy(a, str8_lit("<p><a href=\"https://a.b/c\">d</a> <img src=\"https://e.f/g.png\" alt=\"h\"></p>"));
     d = rich_parse(a, src, MARKUP_HTML, RICH_TEXT_MAX);

@@ -195,8 +195,9 @@ static void run_task(Task *t)
         ss->query = str8_copy(a, str8_cstring(t->text));
         ss->sort = t->sort;
         ss->index = t->index;
+        ss->category = t->category;
         static const int cf_sorts[SORT_COUNT] = { CF_SORT_POPULARITY, CF_SORT_DOWNLOADS, CF_SORT_UPDATED, CF_SORT_RELEASED };
-        ss->v = mgr_search_page(m, ss->query, cf_sorts[t->sort % SORT_COUNT], t->index, &ss->count, &ss->cf_count);
+        ss->v = mgr_search_page(m, ss->query, cat_cf_query(a, t->category), cf_sorts[t->sort % SORT_COUNT], t->index, &ss->count, &ss->cf_count);
         ss->failed = !ss->v;
         if (!ss->v && !quiet) worker_set_status(m->error, 1);
         wm_post(on_search, 0, ss);

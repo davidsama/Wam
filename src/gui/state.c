@@ -44,6 +44,7 @@ typedef struct SearchSnap {
     U64 index;
     SearchResult *v;
     U64 count;
+    S64 category;        // the CurseForge category asked for (0: all)
     U64 cf_count;        // of those, from CurseForge: a full page (CF_PAGE_SIZE) means there may be more
     B32 failed;
 } SearchSnap;
@@ -96,7 +97,8 @@ typedef struct Task {
     TaskKind kind; int flavor; U32 gen; S32 seq; char wow_root[1024]; B32 force;
     U32 id;               // queued tasks: numbered in order; on_task_done says which one finished
     U64 queued_us;        // when it was queued (tasks.log: how long it waited)
-    int sort; U64 index;  // searches: BrowseSort and page start
+    int sort; U64 index;  // searches: BrowseSort and page start,
+    S64 category;         // and the CurseForge category (0: all)
     char text[8192]; char wago_key[WAGO_KEY_MAX]; // the key as of queuing
 } Task;
 
@@ -247,7 +249,10 @@ typedef struct App {
     F32 detail_share;          // the panel's share of the view's width (dragged; saved in settings.json), 0 = default
     F32 detail_content_h;      // the panel's content height last frame
     // Paging: scrolling near the end asks CurseForge for the next page of this sort + query.
-    char more_query[256]; int more_sort; U64 more_index; B32 more_done; U32 more_asked;
+    char more_query[256]; int more_sort; S64 more_category; U64 more_index; B32 more_done; U32 more_asked;
+    // Pages that added no row to the list (known already, or filtered out): after a few in a row wam stops
+    // asking by itself. more_rows: how many rows there were when the page being waited for was asked for.
+    B32 more_waiting; U64 more_rows; U32 more_empty; U64 more_filters;
     char sugg_last_query[256]; // last query sent while typing (no duplicate requests)
     int sugg_last_sort;
     DownloadsSnap *downloads;
