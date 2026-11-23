@@ -47,10 +47,11 @@ away. Dependencies an addon requires on CurseForge are installed along with it.
 
 ## See before you install
 
-Select an addon to see its screenshots (click one for full size), description, latest changelog,
+Select an addon to see its screenshots in a gallery (GIFs play; click one for full size), its description
+and latest changelog the way the author formatted them,
 download count and age, with links to its page, source code, issue tracker and donation page.
 
-![The detail panel: screenshots, description, version and links](screenshots/details.png)
+![The detail panel: the gallery, the formatted description, version and links](screenshots/details.png)
 
 ## Updates in one click
 
@@ -77,7 +78,7 @@ Frostbound, Inferno, Fel, Bloodrage, Radiance, Wildgrowth and Stormcaller, or pl
 | | |
 |---|---|
 | **Settings backup** | Before updating, wam zips your `WTF` folder (where addons keep their settings), once a day, keeping the last 7. If the backup fails, nothing is updated. |
-| **Safe installs** | New files are unpacked to the side first and moved in only when everything worked. Anything else rolls back. |
+| **Safe installs** | New files are unpacked to the side first and moved in only when everything worked. Anything else rolls back, and a version that can't be put back is kept. |
 | **Your edits stay** | If you changed an addon's files, it's marked *edited locally* and skipped by Update all. |
 | **Undo-able removal** | Removed addons go to the Recycle Bin. wam offers to remove dependencies nothing else needs, and warns before you remove one something else still needs. |
 | **Downloads you made yourself** | Archives you download (`.zip`, `.rar`, `.7z`) show up in wam as soon as they land, with the game version they're built for. Install them with one click, or drop one on the window. |

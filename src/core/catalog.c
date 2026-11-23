@@ -735,8 +735,8 @@ static AddonDetails cat_details_get(Mgr *m, String8 id)
         JSON *item = json_parse(a, r.body)->first;
         if (!r.ok || !item || item->type != JSON_OBJ) { d.error = str8_pushf(a, "WoWInterface: %.*s", S8F(r.ok ? str8_lit("not found") : r.error)); return d; }
         d.version = json_str(json_get(item, "UIVersion"));
-        d.description = rich_parse(a, json_str(json_get(item, "UIDescription")), MARKUP_BBCODE, RICH_TEXT_MAX);
-        d.changelog = rich_parse(a, json_str(json_get(item, "UIChangeLog")), MARKUP_BBCODE, CHANGELOG_MAX);
+        d.description = markup_wowi(a, json_str(json_get(item, "UIDescription")), RICH_TEXT_MAX);
+        d.changelog = markup_wowi(a, json_str(json_get(item, "UIChangeLog")), CHANGELOG_MAX);
         String8List shots = { 0 };
         json_each(img, json_get(item, "UIIMGs")) if (shots.count < SHOTS_MAX && json_str(img).size) shots_push(a, &shots, json_str(img), str8(0, 0));
         d.shots = shots_join(a, &shots); // (empty: the catalog's are shown)

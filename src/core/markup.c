@@ -919,6 +919,14 @@ static Rich *markup_cf(Arena *a, String8 s, U64 max)
     return markup_looks_markdown(t) ? rich_parse(a, t, MARKUP_MARKDOWN, max) : doc;
 }
 
+// WoWInterface's texts: BBCode, or (many changelogs) Markdown, which has none of its tags.
+static Rich *markup_wowi(Arena *a, String8 s, U64 max)
+{
+    static char *tags[] = { "[b]", "[i]", "[u]", "[s]", "[*]", "[url", "[img", "[list", "[size", "[color", "[font", "[code", "[quote", "[center", "[indent", "[highlight", "[php", "[left", "[right" };
+    for (U32 i = 0; i < ArrayCount(tags); i += 1) if (str8_find(s, 0, str8_cstring(tags[i]), 1) < s.size) return rich_parse(a, s, MARKUP_BBCODE, max);
+    return rich_parse(a, s, MARKUP_MARKDOWN, max);
+}
+
 //- Changelogs that cover several versions
 
 // Whether a line names version `from`. Only whole versions: "1.2" mustn't match inside "11.2.5" or "1.25".

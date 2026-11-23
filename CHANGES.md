@@ -1,5 +1,25 @@
 # Changes
 
+## 1.4.0
+
+- **Descriptions and changelogs look right**: headings, bold and italic, lists, quotes, code, tables and
+  clickable links, in the details and in What's new. A link shows where it goes when you point at it.
+- **A screenshot gallery**: one large, uncropped picture with the others below it, up to 30 per addon
+  instead of 6. Click the picture for full size.
+- **Pictures in descriptions** show in place when they're on an addon site; others load when you click them.
+- **GIFs play** in the gallery's large picture and at full size. They pause while wam isn't the active
+  window, and stay still when Windows' animation effects are off.
+- **Details come up sooner**: at once when you click an addon or step with the arrow keys, and the
+  picture you're looking at loads before the others.
+- **Faster start**: about 80 ms sooner, measured on one PC.
+- **Searching within a category** finds more: wam asks CurseForge for that category. A search with few
+  results no longer keeps loading forever; a link at the end looks further when you want it to.
+- **Safer installs**: if an update fails and the old version can't be put back, wam keeps it and says where
+  it is, instead of deleting it.
+- **Damaged archives** are refused more carefully: a zip with a false file size could crash wam.
+- **Settings backups**: wam only ever deletes the backups it made itself, never other zips you keep next
+  to them.
+
 ## 1.3.0
 
 - **Themes**: pick one of ten in Settings. Eight are new and drawn from WoW's magic and melee: Void,

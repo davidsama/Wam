@@ -584,6 +584,13 @@ static void test_rich(Arena *a)
     for (int i = 0; i < (int)ArrayCount(own); i += 1) CHECK(rich_addon_site(str8_cstring(own[i])));
     for (int i = 0; i < (int)ArrayCount(others); i += 1) CHECK(!rich_addon_site(str8_cstring(others[i])));
 
+    // WoWInterface: BBCode, or Markdown when there's no tag of it.
+    d = markup_wowi(a, str8_lit("# Log\r\n\r\n## v2\r\n  - One thing,\r\n    two lines. Type\r\n    `/x y`.\r\n  - Other [New]\r\n\r\nv1\r\n=====\r\n* Old"), RICH_TEXT_MAX);
+    CHECK(block_of(d, "v2")->kind == RICH_HEADING && block_of(d, "One thing, two lines. Type ")->kind == RICH_ITEM && span_of(d, "/x y")->flags == RICH_CODE);
+    CHECK(block_of(d, "v1")->kind == RICH_HEADING && block_of(d, "Old")->kind == RICH_ITEM && span_of(d, "[New]")->text.size);
+    d = markup_wowi(a, str8_lit("[SIZE=\"2\"]Hi[/SIZE] [B]there[/B]"), RICH_TEXT_MAX);
+    CHECK(text_is(rich_plain(a, d), "Hi there") && span_of(d, "there")->flags == RICH_BOLD);
+
     // A category is asked for with its subcategories, unless they're too many.
     CHECK(text_is(cat_cf_query(a, 1006), "1006") && text_is(cat_cf_query(a, 1016), "1016,1039,1037") && text_is(cat_cf_query(a, 1023), "1023"));
     CHECK(!cat_cf_query(a, 0).size && !cat_cf_query(a, 1020).size);
