@@ -515,6 +515,16 @@ static R_Picture r_picture_make(U32 w, U32 h, U8 *pixels)
     return p;
 }
 
+// New pixels of the same size.
+static void r_picture_update(R_Picture *p, U8 *pixels)
+{
+    if (!p->srv) return;
+    ID3D11DeviceContext_UpdateSubresource(r_state->ctx, (ID3D11Resource *)p->tex, 0, 0, pixels, p->w * 4, 0);
+    D3D11_TEXTURE2D_DESC td;
+    ID3D11Texture2D_GetDesc(p->tex, &td);
+    if (td.MiscFlags & D3D11_RESOURCE_MISC_GENERATE_MIPS) ID3D11DeviceContext_GenerateMips(r_state->ctx, p->srv);
+}
+
 // The picture, stretched to dst.
 static void r_picture(R_Picture *p, Rect dst, V4 tint, F32 radius)
 {

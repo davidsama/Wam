@@ -12,7 +12,7 @@
 // read directly instead of through ui_image_fetch.
 //
 // The atlas holds a fixed number of slots per kind; the least recently drawn picture gives up its
-// slot. Requests are served newest first, and a request whose picture went off screen meanwhile is
+// slot. Requests are served newest first (the picture being looked at before any other, with a loader of its own), and a request whose picture went off screen meanwhile is
 // skipped, so scrolling through a long list loads what's visible now, not what was visible before.
 // Pictures that fail to load are remembered and not asked for again.
 //
@@ -45,10 +45,11 @@ typedef struct UI_ImageSlot {
     volatile U64 used_ms;   // last drawn (loader threads read it to skip stale requests)
     U16 x, y;               // in the atlas
     R_Picture picture;      // full size and fitted ones: the texture
+    B32 animated;           // a GIF that moves (ui_gif_play)
 } UI_ImageSlot;
 
-typedef struct UI_ImageRequest { U64 key; int kind; U32 slot; char url[1024]; } UI_ImageRequest;
-typedef struct UI_ImageResult { U64 key; int kind; U32 slot; U32 w, h; B32 ok, skipped; U8 pixels[1]; } UI_ImageResult;
+typedef struct UI_ImageRequest { U64 key; int kind; U32 slot; B32 urgent; char url[1024]; } UI_ImageRequest; // urgent: what's being looked at
+typedef struct UI_ImageResult { U64 key; int kind; U32 slot; U32 w, h; B32 ok, skipped, animated; U8 pixels[1]; } UI_ImageResult;
 
 #define UI_IMG_ICON_SLOTS  ((R_IMAGES_SIZE / UI_IMG_ICON_PX) * ((R_IMAGES_SIZE / 2) / UI_IMG_ICON_PX))
 #define UI_IMG_THUMB_SLOTS ((R_IMAGES_SIZE / UI_IMG_THUMB_W) * ((R_IMAGES_SIZE / 2) / UI_IMG_THUMB_H))
@@ -64,7 +65,7 @@ static struct {
     U64 failed[UI_IMG_FAILED];
     U32 failed_next;
     OS_Mutex lock;          // the queue
-    OS_Semaphore sem;
+    OS_Semaphore sem, urgent_sem; // any request / an urgent one (for the loader that only takes those)
     UI_ImageRequest queue[UI_IMG_QUEUE];
     U32 queue_count;
 } ui_img;
@@ -105,7 +106,7 @@ static UI_ImageResult *ui_image_decode(Arena *a, String8 data, U32 w, U32 h, B32
     if (!img.w) return 0;
     UI_ImageResult *res = (UI_ImageResult *)os_alloc(sizeof(UI_ImageResult) + (U64)img.w * img.h * 4);
     if (!res) return 0;
-    res->w = img.w; res->h = img.h;
+    res->w = img.w; res->h = img.h; res->animated = img.animated;
     memcpy(res->pixels, img.pixels, (U64)img.w * img.h * 4);
     return res;
 }
@@ -122,14 +123,22 @@ static void ui_image_arrived(U64 param, void *ptr);
 
 static U32 ui_image_thread(void *p)
 {
-    (void)p;
+    B32 urgent_only = p != 0;
     Arena *a = arena_alloc(GB(1));
     for (;;) {
-        os_semaphore_wait(ui_img.sem);
+        os_semaphore_wait(urgent_only ? ui_img.urgent_sem : ui_img.sem);
         os_mutex_lock(&ui_img.lock);
-        B32 have = ui_img.queue_count > 0;
+        // Newest first, urgent ones before the others.
+        S32 pick = -1;
+        for (S32 i = (S32)ui_img.queue_count - 1; i >= 0 && pick < 0; i -= 1) if (ui_img.queue[i].urgent) pick = i;
+        if (pick < 0 && !urgent_only) pick = (S32)ui_img.queue_count - 1;
+        B32 have = pick >= 0;
         UI_ImageRequest req = { 0 };
-        if (have) req = ui_img.queue[--ui_img.queue_count]; // newest first
+        if (have) {
+            req = ui_img.queue[pick];
+            ui_img.queue_count -= 1;
+            memmove(&ui_img.queue[pick], &ui_img.queue[pick + 1], sizeof(UI_ImageRequest) * (ui_img.queue_count - (U32)pick));
+        }
         os_mutex_unlock(&ui_img.lock);
         if (!have) continue;
 
@@ -163,6 +172,7 @@ static void ui_image_start(void)
     if (ui_img.started) return;
     ui_img.started = 1;
     ui_img.sem = os_semaphore_alloc(1 << 20);
+    ui_img.urgent_sem = os_semaphore_alloc(1 << 20);
     for (U32 i = 0; i < UI_IMG_ICON_SLOTS; i += 1) {
         U32 per_row = R_IMAGES_SIZE / UI_IMG_ICON_PX;
         ui_img.icons[i].x = (U16)((i % per_row) * UI_IMG_ICON_PX);
@@ -174,6 +184,7 @@ static void ui_image_start(void)
         ui_img.thumbs[i].y = (U16)(R_IMAGES_SIZE / 2 + (i / per_row) * UI_IMG_THUMB_H);
     }
     for (U32 t = 0; t < UI_IMG_THREADS; t += 1) os_thread_start(ui_image_thread, 0);
+    os_thread_start(ui_image_thread, &ui_img.urgent_sem);
 }
 
 static B32 ui_image_url_ok(String8 url)
@@ -231,6 +242,7 @@ static void ui_image_arrived(U64 param, void *ptr)
             r_picture_free(&slot->picture);
             slot->picture = r_picture_make(res->w, res->h, res->pixels);
             slot->state = slot->picture.srv ? 2 : 0;
+            slot->animated = res->animated;
             if (!slot->state) { slot->key = 0; ui_img.failed[ui_img.failed_next++ % UI_IMG_FAILED] = ui_image_fail_key(res->key, res->kind); }
             if (res->kind == UI_IMG_FIT) {
                 ui_image_size_set(res->key, res->w, res->h);
@@ -250,7 +262,7 @@ static void ui_image_arrived(U64 param, void *ptr)
 
 // Draws url's picture into dst if it's loaded (returns 1), else asks for it and returns 0 (the
 // caller draws a placeholder). radius rounds the corners; tint multiplies (white = as is).
-static void ui_image_request(UI_ImageSlot *slot, U32 index, U64 key, int kind, String8 url);
+static void ui_image_request(UI_ImageSlot *slot, U32 index, U64 key, int kind, String8 url, B32 urgent);
 
 static B32 ui_image(Rect dst, String8 url, UI_ImageKind kind, F32 radius, V4 tint)
 {
@@ -281,8 +293,158 @@ static B32 ui_image(Rect dst, String8 url, UI_ImageKind kind, F32 radius, V4 tin
         return 1;
     }
     if (!victim) return 0; // every slot is on screen
-    ui_image_request(victim, (U32)(victim - slots), key, kind, url);
+    ui_image_request(victim, (U32)(victim - slots), key, kind, url, 0);
     return 0;
+}
+
+//- GIFs that move
+//
+// One plays at a time: the one shown large (ui_gif_play, called each frame it's drawn). Its thread makes one
+// frame ahead, when the one before has been taken; the UI thread puts it in the picture's texture when it's
+// due and asks for a frame. It stops when it isn't drawn any more, or the window isn't the active one, and
+// goes on from there when it is again.
+
+typedef struct UI_GifFrame { U32 gen, w, h, delay_ms; B32 failed; U8 pixels[1]; } UI_GifFrame;
+
+static struct {
+    B32 started;
+    OS_Mutex lock;           // gen, url, w, h, asked: what the thread should make
+    OS_Semaphore sem;
+    U32 gen, w, h, asked;    // gen: goes up with each other picture; asked: frames asked for of this one
+    char url[1024];
+    // UI thread:
+    U64 key; int kind;       // the picture that plays
+    UI_ImageSlot *slot;
+    UI_GifFrame *next;       // made, waiting until it's due
+    U64 due_ms;
+    B32 drawn, paused;
+} ui_gif;
+
+static void ui_gif_arrived(U64 param, void *ptr);
+
+static U32 ui_gif_thread(void *p)
+{
+    (void)p;
+    Arena *a = arena_alloc(GB(1)), *frame = arena_alloc(MB(256));
+    OS_Gif *g = 0;
+    U32 gen = 0, made = 0;
+    for (;;) {
+        os_semaphore_wait(ui_gif.sem);
+        os_mutex_lock(&ui_gif.lock);
+        U32 want = ui_gif.gen, asked = ui_gif.asked, w = ui_gif.w, h = ui_gif.h;
+        char url[1024];
+        memcpy(url, ui_gif.url, sizeof(url));
+        os_mutex_unlock(&ui_gif.lock);
+        if (want != gen) {
+            gen = want;
+            made = 0;
+            os_gif_close(g);
+            g = 0;
+            arena_clear(a);
+            String8 data = ui_image_fetch ? ui_image_fetch(a, str8_cstring(url)) : str8(0, 0);
+            if (data.size && data.size <= UI_IMG_MAX_BYTES * 4) g = os_gif_open(a, data);
+        }
+        if (made >= asked) continue;
+        made += 1;
+        arena_clear(frame);
+        U32 delay = 0;
+        OS_Image img = { 0 };
+        if (g && os_gif_next(g, &delay)) img = os_gif_pixels(frame, g, w, h);
+        UI_GifFrame *f = (UI_GifFrame *)os_alloc(sizeof(UI_GifFrame) + (img.w ? (U64)img.w * img.h * 4 : 0));
+        if (!f) continue;
+        f->gen = gen; f->w = img.w; f->h = img.h; f->delay_ms = delay;
+        f->failed = !img.w;
+        if (img.w) memcpy(f->pixels, img.pixels, (U64)img.w * img.h * 4);
+        if (!wm_post(ui_gif_arrived, 0, f)) os_free(f);
+    }
+}
+
+static void ui_gif_ask(void)
+{
+    os_mutex_lock(&ui_gif.lock);
+    ui_gif.asked += 1;
+    os_mutex_unlock(&ui_gif.lock);
+    os_semaphore_signal(ui_gif.sem);
+}
+
+static void ui_gif_stop(void)
+{
+    if (ui_gif.next) { os_free(ui_gif.next); ui_gif.next = 0; }
+    ui_gif.key = 0;
+    ui_gif.slot = 0;
+}
+
+static void ui_gif_tick(void);
+
+// Puts the next frame up if it's there and due; else comes back when it is.
+static void ui_gif_advance(void)
+{
+    if (!ui_gif.key || !ui_gif.next) return;
+    UI_ImageSlot *slot = ui_gif.slot;
+    if (slot->key != ui_gif.key || slot->state != 2 || slot->picture.w != ui_gif.next->w || slot->picture.h != ui_gif.next->h) { ui_gif_stop(); return; }
+    U64 now = os_now_ms();
+    if (now < ui_gif.due_ms) { wm_timer_start(ui_gif_tick, (U32)(ui_gif.due_ms - now)); return; }
+    if (!ui_gif.drawn || !wm_window_is_active()) { ui_gif.paused = 1; return; } // nobody sees it: ui_gif_play goes on
+    r_picture_update(&slot->picture, ui_gif.next->pixels);
+    // On time from frame to frame, unless it fell behind.
+    ui_gif.due_ms = (now - ui_gif.due_ms > 200 ? now : ui_gif.due_ms) + ui_gif.next->delay_ms;
+    os_free(ui_gif.next);
+    ui_gif.next = 0;
+    ui_gif.drawn = 0;
+    ui_gif_ask();
+    wm_request_frame();
+}
+
+static void ui_gif_tick(void)
+{
+    wm_timer_stop(ui_gif_tick);
+    ui_gif_advance();
+}
+
+static void ui_gif_arrived(U64 param, void *ptr)
+{
+    (void)param;
+    UI_GifFrame *f = (UI_GifFrame *)ptr;
+    if (f->gen != ui_gif.gen || !ui_gif.key || ui_gif.next) { os_free(f); return; }
+    if (f->failed) { if (ui_gif.slot && ui_gif.slot->key == ui_gif.key) ui_gif.slot->animated = 0; os_free(f); ui_gif_stop(); return; } // it stays as it is
+    ui_gif.next = f;
+    ui_gif_advance();
+}
+
+// The picture in slot was drawn, and should move.
+static void ui_gif_play(UI_ImageSlot *slot, int kind, String8 url)
+{
+    if (!slot->animated || url.size >= sizeof(ui_gif.url) || !os_animations_on()) return;
+    if (ui_gif.key != slot->key || ui_gif.kind != kind || ui_gif.slot != slot) {
+        if (!ui_gif.started) {
+            ui_gif.started = 1;
+            ui_gif.sem = os_semaphore_alloc(1 << 20);
+            os_thread_start(ui_gif_thread, 0);
+        }
+        ui_gif_stop();
+        ui_gif.key = slot->key; ui_gif.kind = kind; ui_gif.slot = slot;
+        ui_gif.due_ms = os_now_ms();
+        ui_gif.paused = 0;
+        os_mutex_lock(&ui_gif.lock);
+        ui_gif.gen += 1;
+        ui_gif.asked = 0;
+        ui_gif.w = slot->picture.w; ui_gif.h = slot->picture.h;
+        memcpy(ui_gif.url, url.str, url.size);
+        ui_gif.url[url.size] = 0;
+        os_mutex_unlock(&ui_gif.lock);
+        ui_gif_ask();
+    }
+    ui_gif.drawn = 1;
+    if (ui_gif.paused && wm_window_is_active()) { ui_gif.paused = 0; ui_gif.due_ms = os_now_ms(); wm_timer_start(ui_gif_tick, 10); }
+    else ui_gif_advance(); // (timers wait while something else animates; the texture is read when the frame ends)
+}
+
+// Whether a picture's link says it's a GIF.
+static B32 ui_image_url_gif(String8 url)
+{
+    U64 n = 0;
+    while (n < url.size && url.str[n] != '?' && url.str[n] != '#') n += 1;
+    return str8_ends_with(str8_prefix(url, n), str8_lit(".gif"), 1);
 }
 
 // Draws the full-size picture at url, as big as it is or scaled down to fit inside area, centered
@@ -294,18 +456,18 @@ static B32 ui_image_full(Rect area, String8 url, F32 radius, Rect *drawn)
     U64 key = ui_image_key(url), now = os_now_ms();
     if (ui_image_has_failed(key, UI_IMG_FULL)) return 0;
     UI_ImageSlot *slot = &ui_img.full;
-    if (slot->key != key) { ui_image_request(slot, 0, key, UI_IMG_FULL, url); return 0; }
+    if (slot->key != key) { ui_image_request(slot, 0, key, UI_IMG_FULL, url, 1); return 0; }
     slot->used_ms = now;
     if (slot->state != 2) return 0;
     Rect r = ui_image_fit(area, slot->picture.w, slot->picture.h, 1);
     r_picture(&slot->picture, r, ui_hex(0xffffff, 1), radius);
+    ui_gif_play(slot, UI_IMG_FULL, url);
     if (drawn) *drawn = r;
     return 1;
 }
 
-// A whole picture, kept small enough to have several (UI_IMG_FIT_MAX): draws it into area like
-// ui_image_full, but scaled up at most max_scale times. Returns 0 while it loads (or if it can't).
-static B32 ui_picture(Rect area, String8 url, F32 max_scale, F32 radius, Rect *drawn)
+// The fitted picture at url once it's loaded, else 0 (and it's asked for).
+static UI_ImageSlot *ui_picture_slot(String8 url, B32 urgent)
 {
     if (!ui_image_url_ok(url)) return 0;
     ui_image_start();
@@ -320,16 +482,37 @@ static B32 ui_picture(Rect area, String8 url, F32 max_scale, F32 radius, Rect *d
     }
     if (!slot) {
         // (A victim's texture may be in this frame's batches only if it was drawn just now: then it isn't one.)
-        if (victim) { r_picture_free(&victim->picture); ui_image_request(victim, (U32)(victim - ui_img.fits), key, UI_IMG_FIT, url); }
+        if (victim) { r_picture_free(&victim->picture); ui_image_request(victim, (U32)(victim - ui_img.fits), key, UI_IMG_FIT, url, urgent); }
         return 0;
     }
     slot->used_ms = now;
-    if (slot->state != 2) return 0;
+    return slot->state == 2 ? slot : 0;
+}
+
+// A whole picture, kept small enough to have several (UI_IMG_FIT_MAX): draws it into area like
+// ui_image_full, but scaled up at most max_scale times; play: it's the one being looked at (at most one
+// picture drawn): it loads before others, and a GIF moves. Returns 0 while it loads (or if it can't).
+static B32 ui_picture(Rect area, String8 url, F32 max_scale, F32 radius, B32 play, Rect *drawn)
+{
+    UI_ImageSlot *slot = ui_picture_slot(url, play);
+    if (!slot) return 0;
     Rect r = ui_image_fit(area, slot->picture.w, slot->picture.h, max_scale);
     r_picture(&slot->picture, r, ui_hex(0xffffff, 1), radius);
+    if (play) ui_gif_play(slot, UI_IMG_FIT, url);
     if (drawn) *drawn = r;
     return 1;
 }
+
+// Whether ui_picture would draw it right away (doesn't ask for it).
+static B32 ui_picture_ready(String8 url)
+{
+    U64 key = ui_image_key(url);
+    for (U32 i = 0; i < UI_IMG_FITS; i += 1) if (ui_img.fits[i].key == key) return ui_img.fits[i].state == 2;
+    return 0;
+}
+
+// Loads a picture ui_picture will likely be asked for next (call it each frame, like ui_picture).
+static void ui_picture_ahead(String8 url) { ui_picture_slot(url, 0); }
 
 // The size of a picture ui_picture has loaded (it may be gone again). 0 if it isn't known.
 static B32 ui_picture_size(String8 url, U32 *w, U32 *h)
@@ -350,13 +533,13 @@ static B32 ui_image_failed(String8 url)
     return ui_image_has_failed(ui_image_key(url), UI_IMG_FULL);
 }
 
-static void ui_image_request(UI_ImageSlot *victim, U32 index, U64 key, int kind, String8 url)
+static void ui_image_request(UI_ImageSlot *victim, U32 index, U64 key, int kind, String8 url, B32 urgent)
 {
     U64 now = os_now_ms();
     victim->key = key;
     victim->state = 1;
     victim->used_ms = now;
-    UI_ImageRequest req = { key, kind, index, { 0 } };
+    UI_ImageRequest req = { key, kind, index, urgent, { 0 } };
     memcpy(req.url, url.str, url.size);
     os_mutex_lock(&ui_img.lock);
     if (ui_img.queue_count == UI_IMG_QUEUE) {
@@ -371,6 +554,7 @@ static void ui_image_request(UI_ImageSlot *victim, U32 index, U64 key, int kind,
     ui_img.queue[ui_img.queue_count++] = req;
     os_mutex_unlock(&ui_img.lock);
     os_semaphore_signal(ui_img.sem);
+    if (urgent) os_semaphore_signal(ui_img.urgent_sem);
 }
 
 // A picture, or the first letter of name on bg (in fg) until (or unless) one loads.

@@ -695,16 +695,176 @@ static String8 os_clipboard_text(Arena *a)
     return r;
 }
 
-static OS_Image os_image_decode(Arena *a, String8 data, U32 w, U32 h, B32 fit)
+// WIC, one factory per thread (each thread joins the multithreaded apartment the first time).
+static IWICImagingFactory *os_wic(void)
 {
-    // WIC, one factory per thread (each thread joins the multithreaded apartment the first time).
     thread_static IWICImagingFactory *wic;
-    thread_static B32 wic_tried;
-    if (!wic_tried) {
-        wic_tried = 1;
+    thread_static B32 tried;
+    if (!tried) {
+        tried = 1;
         CoInitializeEx(0, COINIT_MULTITHREADED);
         CoCreateInstance(&CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&wic);
     }
+    return wic;
+}
+
+static B32 os_animations_on(void)
+{
+    BOOL on = TRUE;
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &on, 0);
+    return on != 0;
+}
+
+//- Animated GIFs
+//
+// WIC decodes each frame as it's stored, a part of the picture; putting the parts together (where, over
+// what, how long) is up to us, from the frames' metadata.
+
+#define OS_GIF_MAX_PIXELS (9u << 20)
+
+static U32 os_wic_number(IWICMetadataQueryReader *q, WCHAR *name, U32 otherwise)
+{
+    PROPVARIANT v;
+    memset(&v, 0, sizeof(v));
+    if (!q || FAILED(IWICMetadataQueryReader_GetMetadataByName(q, name, &v))) return otherwise;
+    U32 n = v.vt == VT_UI1 ? v.bVal : v.vt == VT_UI2 ? v.uiVal : v.vt == VT_UI4 ? v.ulVal : otherwise;
+    PropVariantClear(&v);
+    return n;
+}
+
+static OS_Gif *os_gif_open(Arena *a, String8 data)
+{
+    IWICImagingFactory *wic = os_wic();
+    if (!wic || data.size < 13 || memcmp(data.str, "GIF8", 4) || data.size > 0xFFFFFFFF) return 0;
+    IWICStream *stream = 0;
+    IWICBitmapDecoder *dec = 0;
+    UINT frames = 0;
+    if (SUCCEEDED(IWICImagingFactory_CreateStream(wic, &stream)) && SUCCEEDED(IWICStream_InitializeFromMemory(stream, data.str, (DWORD)data.size))
+        && SUCCEEDED(IWICImagingFactory_CreateDecoderFromStream(wic, (IStream *)stream, &GUID_VendorMicrosoft, WICDecodeMetadataCacheOnDemand, &dec))) {
+        IWICBitmapDecoder_GetFrameCount(dec, &frames);
+    }
+    U32 w = data.str[6] | (data.str[7] << 8), h = data.str[8] | (data.str[9] << 8); // the header's "logical screen"
+    if (frames < 2 || !w || !h || (U64)w * h > OS_GIF_MAX_PIXELS) {
+        if (dec) IWICBitmapDecoder_Release(dec);
+        if (stream) IWICStream_Release(stream);
+        return 0;
+    }
+    OS_Gif *g = push_struct(a, OS_Gif);
+    g->arena = a;
+    g->w = w; g->h = h; g->frames = frames;
+    g->decoder = dec; g->stream = stream;
+    g->canvas = push_array(a, U8, (U64)w * h * 4);
+    return g;
+}
+
+static void os_gif_close(OS_Gif *g)
+{
+    if (!g) return;
+    if (g->decoder) IWICBitmapDecoder_Release((IWICBitmapDecoder *)g->decoder);
+    if (g->stream) IWICStream_Release((IWICStream *)g->stream);
+    g->decoder = g->stream = 0;
+}
+
+static B32 os_gif_next(OS_Gif *g, U32 *delay_ms)
+{
+    IWICImagingFactory *wic = os_wic();
+    if (!wic || !g->decoder) return 0;
+    U64 pitch = (U64)g->w * 4;
+    U32 at = g->started ? (g->at + 1) % g->frames : 0;
+
+    // What the last frame leaves behind: itself, nothing (2), or what was there before it (3).
+    if (!at) memset(g->canvas, 0, pitch * g->h);
+    else if (g->disposal == 2) for (S32 y = g->y0; y < g->y1; y += 1) memset(g->canvas + y * pitch + g->x0 * 4, 0, (U64)(g->x1 - g->x0) * 4);
+    else if (g->disposal == 3 && g->saved) memcpy(g->canvas, g->saved, pitch * g->h);
+
+    IWICBitmapFrameDecode *frame = 0;
+    IWICMetadataQueryReader *q = 0;
+    IWICFormatConverter *conv = 0;
+    B32 ok = 0;
+    Temp t = scratch_begin(g->arena);
+    if (FAILED(IWICBitmapDecoder_GetFrame((IWICBitmapDecoder *)g->decoder, at, &frame))) goto done;
+    UINT fw = 0, fh = 0;
+    IWICBitmapFrameDecode_GetSize(frame, &fw, &fh);
+    if (!fw || !fh || (U64)fw * fh > OS_GIF_MAX_PIXELS) goto done;
+    IWICBitmapFrameDecode_GetMetadataQueryReader(frame, &q);
+    U32 left = os_wic_number(q, L"/imgdesc/Left", 0), top = os_wic_number(q, L"/imgdesc/Top", 0);
+    U32 delay = os_wic_number(q, L"/grctlext/Delay", 10);
+    g->disposal = os_wic_number(q, L"/grctlext/Disposal", 0);
+    if (FAILED(IWICImagingFactory_CreateFormatConverter(wic, &conv))) goto done;
+    if (FAILED(IWICFormatConverter_Initialize(conv, (IWICBitmapSource *)frame, &GUID_WICPixelFormat32bppBGRA,
+                                              WICBitmapDitherTypeNone, 0, 0, WICBitmapPaletteTypeCustom))) goto done;
+    U8 *px = push_array_nz(t.arena, U8, (U64)fw * fh * 4);
+    if (FAILED(IWICFormatConverter_CopyPixels(conv, 0, fw * 4, fw * fh * 4, px))) goto done;
+
+    if (g->disposal == 3) {
+        if (!g->saved) g->saved = push_array_nz(g->arena, U8, pitch * g->h);
+        memcpy(g->saved, g->canvas, pitch * g->h);
+    }
+    g->x0 = (S32)Min(left, g->w); g->y0 = (S32)Min(top, g->h);
+    g->x1 = (S32)Min(left + fw, g->w); g->y1 = (S32)Min(top + fh, g->h);
+    for (S32 y = g->y0; y < g->y1; y += 1) {
+        U32 *src = (U32 *)px + (U64)(y - g->y0) * fw, *dst = (U32 *)g->canvas + (U64)y * g->w + g->x0;
+        for (S32 x = 0; x < g->x1 - g->x0; x += 1) if (src[x] >> 24) dst[x] = src[x];
+    }
+    g->at = at;
+    g->started = 1;
+    *delay_ms = delay < 2 ? 100 : Min(delay, 6000) * 10; // like browsers: next to nothing means 0.1 s
+    ok = 1;
+done:
+    if (conv) IWICFormatConverter_Release(conv);
+    if (q) IWICMetadataQueryReader_Release(q);
+    if (frame) IWICBitmapFrameDecode_Release(frame);
+    scratch_end(t);
+    return ok;
+}
+
+static OS_Image os_gif_pixels(Arena *out, OS_Gif *g, U32 w, U32 h)
+{
+    OS_Image img = { 0 };
+    IWICImagingFactory *wic = os_wic();
+    if (!wic || !w || !h) return img;
+    U8 *pixels = push_array_nz(out, U8, (U64)w * h * 4);
+    if (w == g->w && h == g->h) {
+        memcpy(pixels, g->canvas, (U64)w * h * 4);
+    } else {
+        IWICBitmap *bmp = 0;
+        IWICBitmapScaler *scaler = 0;
+        B32 ok = SUCCEEDED(IWICImagingFactory_CreateBitmapFromMemory(wic, g->w, g->h, &GUID_WICPixelFormat32bppBGRA, g->w * 4, g->w * g->h * 4, g->canvas, &bmp))
+              && SUCCEEDED(IWICImagingFactory_CreateBitmapScaler(wic, &scaler))
+              && SUCCEEDED(IWICBitmapScaler_Initialize(scaler, (IWICBitmapSource *)bmp, w, h, WICBitmapInterpolationModeFant))
+              && SUCCEEDED(IWICBitmapScaler_CopyPixels(scaler, 0, w * 4, w * h * 4, pixels));
+        if (scaler) IWICBitmapScaler_Release(scaler);
+        if (bmp) IWICBitmap_Release(bmp);
+        if (!ok) return img;
+    }
+    img.w = w; img.h = h; img.pixels = pixels; img.animated = 1;
+    return img;
+}
+
+// A whole picture's size, scaled down to fit inside w x h.
+static void os_image_fit(U32 sw, U32 sh, U32 w, U32 h, U32 *tw, U32 *th)
+{
+    F64 k = Min(1.0, Min((F64)w / sw, (F64)h / sh));
+    *tw = Max((U32)(sw * k + 0.5), 1);
+    *th = Max((U32)(sh * k + 0.5), 1);
+}
+
+static OS_Image os_image_decode(Arena *a, String8 data, U32 w, U32 h, B32 fit)
+{
+    if (fit) { // an animated GIF: its first frame, as it's played
+        Temp t = scratch_begin(a);
+        OS_Image first = { 0 };
+        OS_Gif *g = os_gif_open(t.arena, data);
+        U32 delay, gw, gh;
+        if (g && os_gif_next(g, &delay)) {
+            os_image_fit(g->w, g->h, w, h, &gw, &gh);
+            first = os_gif_pixels(a, g, gw, gh);
+        }
+        os_gif_close(g);
+        scratch_end(t);
+        if (first.w) return first;
+    }
+    IWICImagingFactory *wic = os_wic();
     OS_Image img = { 0 };
     if (!wic) return img;
     IWICStream *stream = 0;
@@ -725,9 +885,8 @@ static OS_Image os_image_decode(Arena *a, String8 data, U32 w, U32 h, B32 fit)
     UINT tw, th;
     if (fit) {
         // As big as it is, or scaled down to fit inside w x h.
-        F64 k = Min(1.0, Min((F64)w / sw, (F64)h / sh));
-        tw = Max((UINT)(sw * k + 0.5), 1); th = Max((UINT)(sh * k + 0.5), 1);
-        w = tw; h = th;
+        os_image_fit(sw, sh, w, h, &w, &h);
+        tw = w; th = h;
     } else {
         // Scale so the picture covers w x h, then take the middle.
         F64 k = Max((F64)w / sw, (F64)h / sh);

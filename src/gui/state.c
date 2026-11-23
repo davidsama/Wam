@@ -67,7 +67,7 @@ typedef struct DetailSnap {
     U64 arrived_ms;  // failures are asked again when selected later (a rate limit or network hiccup passes)
     AddonDetails d;
 } DetailSnap;
-#define DETAIL_CACHE 16
+#define DETAIL_CACHE 32 // (about 1 MB each)
 
 // What an installed addon's update would bring, for the changes popup (core/catalog.c).
 typedef struct ChangesSnap {

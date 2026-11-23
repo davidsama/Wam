@@ -98,7 +98,18 @@ static String8 os_clipboard_text(Arena *a);
 // Decodes a picture (PNG, JPEG, GIF, BMP, WebP if installed...) to BGRA with straight alpha:
 // scaled to exactly w x h, cropped to fill, or with fit scaled down (never up) to fit inside
 // w x h. Pixels are pushed on a; empty (w 0) if it can't.
-typedef struct OS_Image { U32 w, h; U8 *pixels; } OS_Image;
+typedef struct OS_Image { U32 w, h; U8 *pixels; B32 animated; } OS_Image; // animated: a GIF with more pictures (see OS_Gif)
 static OS_Image os_image_decode(Arena *a, String8 data, U32 w, U32 h, B32 fit);
+
+// An animated GIF, one frame after the other. It lives in a, as long as data does; use it on the thread
+// that opened it. os_gif_next goes on to the next frame (the first one, the first time; from the last one
+// back to the first) and says how long it's shown. 0: it can't be read. os_gif_pixels is the frame as a whole
+// picture, scaled to w x h (pushed on out).
+typedef struct OS_Gif { U32 w, h, frames; void *decoder, *stream; U32 at; B32 started; U8 *canvas, *saved; U32 disposal; S32 x0, y0, x1, y1; Arena *arena; } OS_Gif;
+static OS_Gif *os_gif_open(Arena *a, String8 data); // 0 if it isn't an animated GIF (or it's too big)
+static B32 os_gif_next(OS_Gif *g, U32 *delay_ms);
+static OS_Image os_gif_pixels(Arena *out, OS_Gif *g, U32 w, U32 h);
+static void os_gif_close(OS_Gif *g);
+static B32 os_animations_on(void);   // Windows' "Animation effects" setting
 
 #endif

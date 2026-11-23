@@ -1030,21 +1030,49 @@ static void details_arrived(DetailSnap *ds)
     *slot = ds;
 }
 
-// The panel follows the selection; details are asked for once it rests for a moment, so holding
-// an arrow key doesn't send a request per row.
+// Whether to show that something is being waited for: not for the first moment, or a wait too short to
+// notice would flash an indicator. key: what's waited for (a new one starts over).
+#define WAIT_SHOWN_AFTER_MS 250
+typedef struct Wait { U64 key, since_ms; } Wait;
+static Wait detail_wait, gallery_wait;
+
+static void wait_timer(void) { wm_timer_stop(wait_timer); wm_request_frame(); }
+
+static B32 wait_shown(Wait *w, U64 key)
+{
+    U64 now = os_now_ms();
+    if (w->key != key) { w->key = key; w->since_ms = now; }
+    if (now - w->since_ms >= WAIT_SHOWN_AFTER_MS) return 1;
+    wm_timer_start(wait_timer, (U32)(WAIT_SHOWN_AFTER_MS - (now - w->since_ms)) + 1); // come back then
+    return 0;
+}
+
+// The panel follows the selection. Details are asked for at once, unless the selection is moving along (it
+// changed a moment ago: an arrow key held down, which repeats about 30 times a second); then once it rests,
+// so that doesn't send a request per row.
+#define DETAILS_REST_MS 120
+static void details_timer(void);
 static void details_follow(void)
 {
     if (str8_match(str8_cstring(app.sel_id), str8_cstring(app.detail_want), 0)) return;
     copy_cstr(app.detail_want, sizeof(app.detail_want), str8_cstring(app.sel_id));
     app.detail_scroll.pos = app.detail_scroll.target = 0;
     app.gallery_index = app.gallery_first = 0;
-    if (app.sel_id[0]) { wm_timer_start(details_timer, 120); details_due_ms = os_now_ms() + 120; }
+    static U64 changed_ms;
+    U64 now = os_now_ms();
+    B32 moving = now - changed_ms < DETAILS_REST_MS;
+    changed_ms = now;
+    if (!app.sel_id[0]) return;
+    if (!moving) { details_timer(); return; }
+    wm_timer_start(details_timer, DETAILS_REST_MS);
+    details_due_ms = now + DETAILS_REST_MS;
 }
 
 static void details_timer(void)
 {
     wm_timer_stop(details_timer);
     details_due_ms = 0;
+    wm_request_frame(); // (the gallery's large picture waited for this too)
     String8 want = str8_cstring(app.detail_want);
     DetailSnap *have = want.size ? details_find(want) : 0;
     // A failure shown for a few seconds already is asked again (it stays on screen until the answer comes).
@@ -1172,9 +1200,18 @@ static F32 draw_gallery(Rect p, F32 x, F32 y, F32 w, Shot *shots, U32 n, B32 *an
         Shot *shot = &shots[app.gallery_index];
         F32 cx = (stage.x0 + stage.x1) * 0.5f, cy = (stage.y0 + stage.y1) * 0.5f;
         r_rect(stage, ui_hex(0x000000, 0.30f), 8 * s, 0, 0.5f);
-        if (!ui_picture(stage, shot->full, 2 * s, 8 * s, 0)) {
-            if (ui_picture_failed(shot->full)) ui_text_centered(ui.font.caption, stage, str8_lit("Couldn't load this picture."), C_FAINT);
-            else *animating |= ui_spinner(cx, cy, 9 * s);
+        // The whole picture is asked for when the details are (at once, unless the selection is moving), so holding an arrow
+        // key doesn't fetch one per row; until it's there, its thumbnail, and then the next one loads too.
+        B32 rests = !details_due_ms || ui_picture_ready(shot->full);
+        if (rests && ui_picture(stage, shot->full, 2 * s, 8 * s, !app.viewer_open, 0)) {
+            gallery_wait.key = 0;
+            String8 next = shots[(app.gallery_index + 1) % n].full;
+            if (n > 1 && !ui_image_url_gif(next)) ui_picture_ahead(next); // (GIFs are big)
+        } else if (rests && ui_picture_failed(shot->full)) {
+            ui_text_centered(ui.font.caption, stage, str8_lit("Couldn't load this picture."), C_FAINT);
+        } else {
+            ui_image(ui_image_fit(stage, UI_IMG_THUMB_W, UI_IMG_THUMB_H, 1e6f), shot->thumb, UI_IMG_THUMB, 8 * s, ui_hex(0xffffff, 0.6f));
+            if (rests && wait_shown(&gallery_wait, ui_image_key(shot->full))) *animating |= ui_spinner(cx, cy, 9 * s);
         }
         B32 hot = in_view && ui_mouse_in(stage), used = 0;
         if (n > 1) {
@@ -1221,6 +1258,7 @@ static F32 draw_gallery(Rect p, F32 x, F32 y, F32 w, Shot *shots, U32 n, B32 *an
             Rect r = rect((F32)(int)tx, ty, (F32)(int)(tx + tw), ty + th);
             B32 hot = in_view && ui_mouse_in(r), cur = at == app.gallery_index;
             if (!ui_image(r, shots[at].thumb, UI_IMG_THUMB, 5 * s, ui_hex(0xffffff, cur || hot ? 1.0f : 0.55f))) r_rect(r, C_BUTTON, 5 * s, 0, 0.5f);
+            if (ui_image_url_gif(shots[at].full)) draw_gif_badge(r);
             if (cur) r_rect(r, C_ACCENT, 5 * s, 2 * ui_px(), 0.5f);
             else if (hot) r_rect(r, C_BORDER_HI, 5 * s, ui_px(), 0.5f);
             if (hot) ui.cursor = UI_CURSOR_HAND;
@@ -1242,8 +1280,10 @@ static B32 draw_detail(Rect p, SearchResult *e)
     DetailSnap *ds = details_find(e->id);
     AddonDetails *d = ds ? &ds->d : 0;
     B32 loading = !ds;
+    if (!loading) detail_wait.key = 0;
+    B32 show_loading = loading && !details_due_ms && wait_shown(&detail_wait, ui_image_key(e->id));
     animating |= ui_scroll_list(&app.detail_scroll, p, app.detail_content_h);
-    if (loading) animating |= ui_loading_bar(rect(p.x0, p.y0, p.x1, p.y0 + 2 * s));
+    if (show_loading) animating |= ui_loading_bar(rect(p.x0, p.y0, p.x1, p.y0 + 2 * s));
 
     F32 x = p.x0 + 20 * s, w = p.x1 - 20 * s - x;
     F32 y0 = p.y0 + 18 * s - app.detail_scroll.pos, y = y0;
@@ -1348,8 +1388,10 @@ static B32 draw_detail(Rect p, SearchResult *e)
     if (nshots) y += draw_gallery(p, x, y, w, shots, nshots, &animating) + 14 * s;
     if (loading) {
         F32 cr = 7 * s;
-        animating |= ui_spinner(x + cr, y + ui.font.caption->line_height * 0.5f, cr);
-        f_draw_text(ui.font.caption, x + cr * 2 + 8 * s, y, str8_lit("Loading details..."), C_FAINT, w - cr * 2 - 8 * s);
+        if (show_loading) {
+            animating |= ui_spinner(x + cr, y + ui.font.caption->line_height * 0.5f, cr);
+            f_draw_text(ui.font.caption, x + cr * 2 + 8 * s, y, str8_lit("Loading details..."), C_FAINT, w - cr * 2 - 8 * s);
+        }
         y += ui.font.caption->line_height + 8 * s;
     } else if (!d->ok) {
         y += ui_text_wrapped(ui.font.caption, x, y, w, d->error, C_FAINT, p.y0, p.y1) + 8 * s;

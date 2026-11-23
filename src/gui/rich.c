@@ -266,6 +266,16 @@ static RichLayout *rich_layout_get(Rich *doc, F32 w, B32 caption)
     return l;
 }
 
+// "GIF" in a picture's corner, if there's room: it moves when it's shown large.
+static void draw_gif_badge(Rect r)
+{
+    F32 s = ui.scale, w = f_text_width(ui.font.caption, str8_lit("GIF")) + 8 * s, h = ui.font.caption->line_height;
+    if (r.x1 - r.x0 < w + 8 * s || r.y1 - r.y0 < h + 8 * s) return;
+    Rect b = rect(r.x0 + 4 * s, r.y0 + 4 * s, r.x0 + 4 * s + w, r.y0 + 4 * s + h);
+    r_rect(b, ui_hex(0x05070a, 0.78f), 4 * s, 0, 0.5f);
+    ui_text_centered(ui.font.caption, b, str8_lit("GIF"), ui_hex(0xffffff, 0.9f));
+}
+
 // Draws the document at (x, y), w wide, only what's in [vis_y0, vis_y1); returns its height. caption: in the
 // caption font. A click on a link opens it in the browser, one on a picture (or its name) sets *picture to its
 // URL (when picture isn't 0, else that opens in the browser too).
@@ -307,7 +317,8 @@ static F32 rich_draw(Rich *doc, F32 x, F32 y, F32 w, B32 caption, F32 vis_y0, F3
         RichSpan *sp = r->span;
         if (r->pic_h) {
             Rect pr = rect(rx, ry, rx + r->w, ry + rh);
-            if (!ui_picture(pr, sp->image, 16, 4 * s, 0)) r_rect(pr, C_BUTTON, 4 * s, 0, 0.5f);
+            if (!ui_picture(pr, sp->image, 16, 4 * s, 0, 0)) r_rect(pr, C_BUTTON, 4 * s, 0, 0.5f);
+            if (ui_image_url_gif(sp->image) && !sp->link.size) draw_gif_badge(pr); // a click plays it, in the viewer
             if (hot == r && sp->link.size) r_rect(pr, C_BORDER_HI, 4 * s, ui_px(), 0.5f);
             continue;
         }

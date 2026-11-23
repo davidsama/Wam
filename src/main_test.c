@@ -1053,6 +1053,92 @@ static void test_fuzz(Arena *a)
     }
 }
 
+//- GIFs
+
+typedef struct GifWriter { U8 *p; U64 n; } GifWriter;
+static void gif_u16(GifWriter *g, U32 v) { g->p[g->n++] = (U8)v; g->p[g->n++] = (U8)(v >> 8); }
+
+// One frame of w x h pixels of palette color `color`, at (x, y); transparent: the color that is (or -1).
+static void gif_frame(GifWriter *g, U32 x, U32 y, U32 w, U32 h, U32 color, U32 disposal, U32 delay, int transparent)
+{
+    U8 ext[4] = { 0x21, 0xF9, 4, (U8)((disposal << 2) | (transparent >= 0)) };
+    memcpy(g->p + g->n, ext, 4); g->n += 4;
+    gif_u16(g, delay);
+    g->p[g->n++] = (U8)Max(transparent, 0);
+    g->p[g->n++] = 0;
+    g->p[g->n++] = 0x2C;
+    gif_u16(g, x); gif_u16(g, y); gif_u16(g, w); gif_u16(g, h);
+    g->p[g->n++] = 0;
+    // LZW without compression: a clear code before every pixel keeps the codes 3 bits wide.
+    g->p[g->n++] = 2;
+    U64 size_at = g->n++;
+    U32 bits = 0, nbits = 0;
+    for (U32 i = 0; i <= w * h; i += 1) {
+        bits |= 4u << nbits; nbits += 3;
+        bits |= (i < w * h ? color : 5u) << nbits; nbits += 3;
+        while (nbits >= 8) { g->p[g->n++] = (U8)bits; bits >>= 8; nbits -= 8; }
+    }
+    if (nbits) g->p[g->n++] = (U8)bits;
+    g->p[size_at] = (U8)(g->n - size_at - 1);
+    g->p[g->n++] = 0;
+}
+
+static U32 gif_px(OS_Gif *g, U32 x, U32 y) { return ((U32 *)g->canvas)[y * g->w + x]; }
+
+static void test_gif(Arena *a)
+{
+    enum { RED = 0xFFFF0000u, GREEN = 0xFF00FF00u, BLUE = 0xFF0000FFu };
+    GifWriter w = { push_array(a, U8, 4096), 0 };
+    memcpy(w.p, "GIF89a", 6); w.n = 6;
+    gif_u16(&w, 4); gif_u16(&w, 2);
+    U8 rest[3 + 12] = { 0xF1, 0, 0, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255 }; // a palette of 4: black, red, green, blue
+    memcpy(w.p + w.n, rest, sizeof(rest)); w.n += sizeof(rest);
+    gif_frame(&w, 0, 0, 4, 2, 1, 1, 10, -1);  // all red, and it stays
+    U64 one = w.n;
+    gif_frame(&w, 1, 0, 2, 1, 2, 2, 0, -1);   // green, then cleared
+    gif_frame(&w, 3, 1, 1, 1, 3, 3, 5, -1);   // blue, then what was there before
+    gif_frame(&w, 0, 0, 1, 1, 0, 1, 5, 0);    // a transparent pixel
+    w.p[w.n++] = 0x3B;
+    String8 data = str8(w.p, w.n);
+
+    OS_Gif *g = os_gif_open(a, data);
+    CHECK(g && g->w == 4 && g->h == 2 && g->frames == 4);
+    if (!g) return;
+    U32 delay = 0;
+    for (int round = 0; round < 2; round += 1) { // and over again
+        CHECK(os_gif_next(g, &delay) && delay == 100 && gif_px(g, 0, 0) == RED && gif_px(g, 1, 0) == RED && gif_px(g, 3, 1) == RED);
+        CHECK(os_gif_next(g, &delay) && delay == 100 && gif_px(g, 1, 0) == GREEN && gif_px(g, 2, 0) == GREEN && gif_px(g, 3, 0) == RED && gif_px(g, 1, 1) == RED);
+        CHECK(os_gif_next(g, &delay) && delay == 50 && gif_px(g, 1, 0) >> 24 == 0 && gif_px(g, 3, 1) == BLUE && gif_px(g, 0, 0) == RED);
+        CHECK(os_gif_next(g, &delay) && gif_px(g, 3, 1) == RED && gif_px(g, 0, 0) == RED && gif_px(g, 2, 0) >> 24 == 0);
+    }
+    OS_Image half = os_gif_pixels(a, g, 2, 1);
+    CHECK(half.w == 2 && half.h == 1 && half.pixels);
+    os_gif_close(g);
+
+    OS_Image img = os_image_decode(a, data, 100, 100, 1);
+    CHECK(img.w == 4 && img.h == 2 && img.animated && *(U32 *)img.pixels == RED);
+    CHECK(!os_image_decode(a, data, 8, 8, 0).animated);
+    U8 *still = push_array(a, U8, one + 1); // one frame: an ordinary picture
+    memcpy(still, w.p, one); still[one] = 0x3B;
+    CHECK(!os_gif_open(a, str8(still, one + 1)));
+    img = os_image_decode(a, str8(still, one + 1), 100, 100, 1);
+    CHECK(img.w == 4 && !img.animated);
+    CHECK(!os_gif_open(a, str8_lit("not a gif at all")) && !os_gif_open(a, str8(0, 0)));
+
+    // Damaged ones: no crash (the fuzzing above's mutations).
+    for (int i = 0; i < 1500; i += 1) {
+        Temp t = temp_begin(a);
+        String8 bytes = fuzz_mutate(data);
+        // (A small canvas, or this takes long.)
+        for (U64 k = 6; k < 10 && k < bytes.size; k += 1) if (k & 1) bytes.str[k] = 0;
+        OS_Gif *f = os_gif_open(t.arena, bytes);
+        for (int k = 0; f && k < 6; k += 1) if (!os_gif_next(f, &delay)) break;
+        os_gif_close(f);
+        free(bytes.str);
+        temp_end(t);
+    }
+}
+
 int main(void)
 {
     Arena *a = arena_alloc(GB(1));
@@ -1078,6 +1164,7 @@ int main(void)
     test_backup(a);
     test_rich(a);
     test_fuzz(a);
+    test_gif(a);
     printf("%d/%d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;
 }

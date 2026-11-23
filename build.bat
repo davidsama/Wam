@@ -26,7 +26,7 @@ if "%1"=="test" set TESTS=1
 if "%1"=="asan" set TESTS=1
 if "%1"=="asan" set TESTFLAGS=/fsanitize=address
 if defined TESTS (
-    cl %COMMON% /Od %TESTFLAGS% ..\src\main_test.c /Fe:wamtest.exe /link %LINK% /SUBSYSTEM:CONSOLE winhttp.lib shell32.lib version.lib ole32.lib crypt32.lib advapi32.lib || goto fail
+    cl %COMMON% /Od %TESTFLAGS% ..\src\main_test.c /Fe:wamtest.exe /link %LINK% /SUBSYSTEM:CONSOLE winhttp.lib shell32.lib version.lib ole32.lib crypt32.lib advapi32.lib user32.lib windowscodecs.lib || goto fail
     .\wamtest.exe || goto fail
     popd
     exit /b 0
