@@ -26,6 +26,8 @@
 #define C_ERROR     ui.theme.error
 #define C_WARN      ui.theme.warn
 
+#include "gui/rich.c"       // descriptions and changelogs (uses the colors above)
+
 static String8 fmt_interface(Arena *a, String8 s)
 {
     int n = 0, digits = 0;
@@ -1295,16 +1297,18 @@ static B32 draw_detail(Rect p, SearchResult *e)
     } else if (!d->ok) {
         y += ui_text_wrapped(ui.font.caption, x, y, w, d->error, C_FAINT, p.y0, p.y1) + 8 * s;
     } else {
-        if (d->description.size) {
+        String8 picture = { 0 };
+        if (!rich_empty(d->description)) {
             f_draw_text(ui.font.bold, x, y, str8_lit("Description"), ui.theme.heading, w);
             y += ui.font.bold->line_height + 6 * s;
-            y += ui_text_wrapped(ui.font.normal, x, y, w, d->description, C_DIM, p.y0, p.y1) + 16 * s;
+            y += rich_draw(d->description, x, y, w, 0, p.y0, p.y1, &picture) + 16 * s;
         }
-        if (d->changelog.size) {
+        if (!rich_empty(d->changelog)) {
             f_draw_text(ui.font.bold, x, y, str8_lit("Changelog"), ui.theme.heading, w);
             y += ui.font.bold->line_height + 6 * s;
-            y += ui_text_wrapped(ui.font.caption, x, y, w, d->changelog, C_DIM, p.y0, p.y1) + 16 * s;
+            y += rich_draw(d->changelog, x, y, w, 1, p.y0, p.y1, &picture) + 16 * s;
         }
+        if (picture.size) { Shot one = { picture, picture }; viewer_open(&one, 1, 0); } // a picture in the text, in wam
     }
     app.detail_content_h = y - y0 + 24 * s;
     ui_scrollbar(&app.detail_scroll, p, app.detail_content_h);

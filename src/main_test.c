@@ -477,6 +477,117 @@ static void test_wago(Arena *a)
     CHECK(str8_match(os_unprotect(a, blob), str8_lit("secret-key-value"), 0));
 }
 
+// A changelog cut where it names the installed version.
+static String8 until(Arena *a, String8 text, char *from)
+{
+    Rich *doc = rich_parse(a, text, MARKUP_MARKDOWN, RICH_TEXT_MAX);
+    rich_until(doc, str8_cstring(from));
+    return rich_plain(a, doc);
+}
+
+static B32 text_is(String8 got, char *want)
+{
+    if (str8_match(got, str8_cstring(want), 0)) return 1;
+    printf("got: %.*s\n", S8F(got));
+    return 0;
+}
+
+static RichSpan *span_of(Rich *doc, char *text) // the span that has it
+{
+    for (RichBlock *k = doc->first; k; k = k->next)
+        for (RichSpan *sp = k->first; sp; sp = sp->next) if (str8_find(sp->text, 0, str8_cstring(text), 0) < sp->text.size) return sp;
+    static RichSpan none;
+    return &none;
+}
+
+static RichBlock *block_of(Rich *doc, char *text)
+{
+    for (RichBlock *k = doc->first; k; k = k->next)
+        for (RichSpan *sp = k->first; sp; sp = sp->next) if (str8_find(sp->text, 0, str8_cstring(text), 0) < sp->text.size) return k;
+    static RichBlock none;
+    return &none;
+}
+
+static void test_rich(Arena *a)
+{
+    // HTML, as CurseForge sends it.
+    Rich *d = rich_parse(a, str8_lit("<h2>Title</h2><p>Some <strong>bold <em>both</em></strong> and <code>/cmd</code>, "
+        "<a href=\"/linkout?remoteUrl=https%253a%252f%252fgithub.com%252fa%252fb\">source</a> <a href=\"javascript:alert(1)\">bad</a> "
+        "<a href='https://x.y/?a=1&amp;b=2'>amp</a></p><ol><li>one<ul><li><p>deep</p></li></ul></li><li>two</li></ol>"
+        "<blockquote><p>said</p></blockquote><pre><code>a\n  b</code></pre><hr>"
+        "<table><tr><th>K</th><th>V</th></tr><tr><td>k1</td><td><p>v1</p><p>v2</p></td></tr></table>"
+        "<table><tr><td>centered</td></tr></table><img alt=\"A > B\" src=\"https://i/x.png\"><br>3 < 4 <unknown>ok"), MARKUP_HTML, RICH_TEXT_MAX);
+    CHECK(block_of(d, "Title")->kind == RICH_HEADING && block_of(d, "Title")->level == 2);
+    CHECK(span_of(d, "bold")->flags == RICH_BOLD && span_of(d, "both")->flags == (RICH_BOLD | RICH_ITALIC));
+    CHECK(span_of(d, "/cmd")->flags == RICH_CODE && span_of(d, " and ")->flags == 0);
+    CHECK(text_is(span_of(d, "source")->link, "https://github.com/a/b")); // where it really goes
+    CHECK(!span_of(d, "bad")->link.size && span_of(d, "bad")->text.size);
+    CHECK(text_is(span_of(d, "amp")->link, "https://x.y/?a=1&b=2"));
+    CHECK(block_of(d, "one")->number == 1 && block_of(d, "two")->number == 2 && block_of(d, "one")->indent == 1);
+    CHECK(block_of(d, "deep")->kind == RICH_ITEM && block_of(d, "deep")->indent == 2 && !block_of(d, "deep")->number);
+    CHECK(block_of(d, "said")->quote == 1 && block_of(d, "centered")->quote == 0);
+    CHECK(block_of(d, "a\n  b")->kind == RICH_PRE);
+    CHECK(block_of(d, "k1")->kind == RICH_CELL && block_of(d, "k1")->cols == 2 && block_of(d, "v1\nv2")->col == 1 && span_of(d, "K")->flags == RICH_BOLD);
+    CHECK(block_of(d, "centered")->kind == RICH_PARA); // a layout table
+    CHECK(text_is(span_of(d, "A > B")->image, "https://i/x.png"));
+    CHECK(block_of(d, "3 < 4 ok")->kind == RICH_PARA);
+
+    // Markdown, with HTML in it.
+    d = rich_parse(a, str8_lit("Big\n===\nA *word*, __strong__, snake_case_name, 2 * 3 * 4, `x*y*z`, ~~old~~ \\*not\\*.\n\n"
+        "1. first\n   goes on\n2. second\n   - inner\n\n   more of two\n\nout\n\n> quoted\n\n```lua\nif a then\n  b()\n```\n"
+        "| A | B |\n|---|:-:|\n| 1 | **2** |\n\nSee https://x.y/z. And <https://q.r> [t](https://u.v/w_(x) \"tip\") [http](http://no) <br>line<b>html</b> <Name> <3\n\n---\nend"), MARKUP_MARKDOWN, RICH_TEXT_MAX);
+    CHECK(block_of(d, "Big")->kind == RICH_HEADING && block_of(d, "Big")->level == 1);
+    CHECK(span_of(d, "word")->flags == RICH_ITALIC && span_of(d, "strong")->flags == RICH_BOLD && span_of(d, "x*y*z")->flags == RICH_CODE);
+    CHECK(span_of(d, "snake_case_name, 2 * 3 * 4")->flags == 0 && span_of(d, "old")->flags == RICH_STRIKE && span_of(d, "*not*")->flags == 0 && span_of(d, "*not*")->text.size);
+    CHECK(block_of(d, "first goes on")->number == 1 && block_of(d, "second")->number == 2);
+    CHECK(block_of(d, "inner")->indent == 2 && block_of(d, "more of two")->kind == RICH_PARA && block_of(d, "more of two")->indent >= 1 && block_of(d, "out")->indent == 0);
+    CHECK(block_of(d, "quoted")->quote == 1 && block_of(d, "if a then\n  b()")->kind == RICH_PRE);
+    CHECK(block_of(d, "2")->kind != RICH_CELL || span_of(d, "B")->text.size); // (a "2" is in the list too)
+    CHECK(text_is(span_of(d, "https://x.y/z")->link, "https://x.y/z") && text_is(span_of(d, "https://q.r")->link, "https://q.r"));
+    CHECK(text_is(span_of(d, "t")->link, "") && text_is(span_of(d, "https://q.r")->text, "https://q.r"));
+    CHECK(text_is(block_of(d, "end")->kind == RICH_PARA ? str8_lit("y") : str8_lit("n"), "y"));
+    CHECK(span_of(d, "html")->flags == RICH_BOLD || span_of(d, "http")->text.size);
+    CHECK(span_of(d, "<Name> <3")->text.size > 0);
+    Rich *links = rich_parse(a, str8_lit("[one](https://u.v/w_(x) \"tip\") [no](http://plain) [ftp](file:///c:/x) [![badge](https://i/b.svg)](https://pay.me/x)"), MARKUP_MARKDOWN, RICH_TEXT_MAX);
+    CHECK(text_is(span_of(links, "one")->link, "https://u.v/w_(x)") && !span_of(links, "no")->link.size && !span_of(links, "ftp")->link.size);
+    CHECK(text_is(span_of(links, "badge")->link, "https://pay.me/x") && text_is(span_of(links, "badge")->image, "https://i/b.svg"));
+    Rich *t = rich_parse(a, str8_lit("| A | B |\n|---|:-:|\n| x | **y** |\nnot a row"), MARKUP_MARKDOWN, RICH_TEXT_MAX);
+    CHECK(block_of(t, "A")->kind == RICH_CELL && block_of(t, "A")->cols == 2 && block_of(t, "y")->row == 2 && span_of(t, "y")->flags == RICH_BOLD);
+    CHECK(block_of(t, "not a row")->kind == RICH_PARA);
+
+    // BBCode: tags that aren't BBCode are text ("[New] ...").
+    d = rich_parse(a, str8_lit("[b]Bold[/b] [url=\"https://a.b\"]site[/url] [url]https://c.d[/url] [New] thing\n[list=1]\n[*]x1\n[*]x2\n[/list]\n[code]\nfoo[1] = 2\n[/code]\nafter\n[quote]q1[/quote]"), MARKUP_BBCODE, RICH_TEXT_MAX);
+    CHECK(span_of(d, "Bold")->flags == RICH_BOLD && text_is(span_of(d, "site")->link, "https://a.b") && text_is(span_of(d, "https://c.d")->link, "https://c.d"));
+    CHECK(span_of(d, "[New] thing")->text.size && block_of(d, "x2")->number == 2);
+    CHECK(block_of(d, "foo[1] = 2")->kind == RICH_PRE && block_of(d, "after")->kind == RICH_PARA && block_of(d, "q1")->quote == 1);
+
+    // Nothing points into the source, which is freed first (a download's buffer).
+    String8 src = str8_copy(a, str8_lit("<p><a href=\"https://a.b/c\">d</a> <img src=\"https://e.f/g.png\" alt=\"h\"></p>"));
+    d = rich_parse(a, src, MARKUP_HTML, RICH_TEXT_MAX);
+    memset(src.str, 0, src.size);
+    CHECK(text_is(span_of(d, "d")->link, "https://a.b/c") && text_is(span_of(d, "h")->image, "https://e.f/g.png"));
+
+    // A text past its limit is cut, at a whole character.
+    d = rich_parse(a, str8_lit("<p>\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9</p>"), MARKUP_HTML, 5);
+    CHECK(text_is(rich_plain(a, d), "\xC3\xA9\xC3\xA9...") || text_is(rich_plain(a, d), "\xC3\xA9..."));
+
+    // Hostile texts don't take long.
+    char *bits[] = { "[", "![", "<", "<!--", "*a", "`", "[url]", "> > ", "|", "<a href=\"", "<li><ul>", "<table><td>", "&", "[a](", "- ", "**", "https://" };
+    U64 t0 = os_now_us();
+    for (int i = 0; i < (int)ArrayCount(bits); i += 1) {
+        U64 t1 = os_now_us();
+        Temp tmp = temp_begin(a);
+        U64 n = strlen(bits[i]), reps = 200000 / n;
+        U8 *buf = push_array_nz(a, U8, n * reps);
+        for (U64 k = 0; k < reps; k += 1) memcpy(buf + k * n, bits[i], n);
+        for (int kind = 0; kind < 3; kind += 1) rich_parse(a, str8(buf, n * reps), (MarkupKind)kind, RICH_TEXT_MAX);
+        temp_end(tmp);
+        if (os_now_us() - t1 > 2000000) printf("slow: %s %llu ms\n", bits[i], (os_now_us() - t1) / 1000);
+    }
+    CHECK(os_now_us() - t0 < 30000000);
+    printf("hostile markup: %llu ms\n", (os_now_us() - t0) / 1000);
+}
+
 static char pin_status[512];
 static void pin_status_cb(void *user, String8 msg) { (void)user; U64 n = Min(msg.size, sizeof(pin_status) - 1); memcpy(pin_status, msg.str, n); pin_status[n] = 0; }
 
@@ -515,16 +626,17 @@ static void test_pins(Arena *a)
 
     // A changelog that covers several versions is cut where it names the installed one (whole versions only).
     String8 log = str8_lit("Version 2.0\n- a\nVersion 1.10\n- b\nVersion 1.1\n- c");
-    CHECK(str8_match(changelog_until(log, str8_lit("1.1")), str8_lit("Version 2.0\n- a\nVersion 1.10\n- b"), 0));
-    CHECK(str8_match(changelog_until(log, str8_lit("v1.10")), str8_lit("Version 2.0\n- a"), 0));
-    CHECK(str8_match(changelog_until(log, str8_lit("3.0")), log, 0));                       // not mentioned: all of it
-    CHECK(str8_match(changelog_until(str8_lit("1.1 notes\nmore"), str8_lit("1.1")), str8_lit("1.1 notes\nmore"), 0)); // never the first line
+    CHECK(text_is(until(a, log, "1.1"), "Version 2.0\n\xE2\x80\xA2 a\nVersion 1.10\n\xE2\x80\xA2 b"));
+    CHECK(text_is(until(a, log, "v1.10"), "Version 2.0\n\xE2\x80\xA2 a"));
+    CHECK(text_is(until(a, log, "3.0"), "Version 2.0\n\xE2\x80\xA2 a\nVersion 1.10\n\xE2\x80\xA2 b\nVersion 1.1\n\xE2\x80\xA2 c")); // not mentioned: all of it
+    CHECK(text_is(until(a, str8_lit("1.1 notes\nmore"), "1.1"), "1.1 notes\nmore"));                               // never the first line
+    CHECK(text_is(until(a, str8_lit("**2.0**\nnew *things*\n1.1\nold\n\nolder"), "1.1"), "2.0\nnew things"));   // within a paragraph
 
     // CurseForge HTML that wraps pasted Markdown gets the Markdown pass too; real HTML doesn't need it.
-    String8 md = markup_cf_html(a, str8_lit("<p># Changelog</p><p>Now **in-game**, see [the notes](https://x.y/z).</p>"));
+    String8 md = rich_plain(a, markup_cf(a, str8_lit("<p># Changelog</p><p>Now **in-game**, see [the notes](https://x.y/z).</p>"), RICH_TEXT_MAX));
     CHECK(str8_starts_with(md, str8_lit("Changelog"), 0) && str8_find(md, 0, str8_lit("Now in-game, see the notes."), 0) < md.size);
     CHECK(str8_find(md, 0, str8_lit("#"), 0) >= md.size && str8_find(md, 0, str8_lit("**"), 0) >= md.size);
-    CHECK(str8_match(markup_cf_html(a, str8_lit("<p>Fixed <b>bars</b>.</p>")), str8_lit("Fixed bars."), 0));
+    CHECK(text_is(rich_plain(a, markup_cf(a, str8_lit("<p>Fixed <b>bars</b>.</p>"), RICH_TEXT_MAX)), "Fixed bars."));
 }
 
 static void test_fingerprint_cache(Arena *a)
@@ -885,6 +997,7 @@ static void test_fuzz(Arena *a)
     U64 at = e->local_offset + 30 + rd16(zip.str + e->local_offset + 26) + rd16(zip.str + e->local_offset + 28);
     String8 comp = str8(zip.str + at, e->comp_size);
     String8 json = str8_lit("{\"a\":[1,-2.5e3,true,null,{\"s\":\"x\\\"\\\\\\u00e9\\ud83d\\ude00\"}],\"o\":{\"k\":\"v\",\"e\":[]}}");
+    String8 markup = str8_lit("# T\n<p>a <b>b</b> <a href=\"https://x.y/%41\">c</a><img src='https://i/j' alt=k></p>\n- **d** [e](https://f.g)\n\n|h|i|\n|-|-|\n|1|2|\n```\ncode\n```\n[list][*][url=https://u]v[/url][/list][code]w[/code]&#8211;<table><tr><td>x<td>y</table>1.2\n\xE2\x80\xA2 z");
     for (int i = 0; i < 20000; i += 1) {
         Temp t = temp_begin(a);
         String8 bytes = fuzz_mutate(zip);
@@ -908,6 +1021,10 @@ static void test_fuzz(Arena *a)
 
         bytes = fuzz_mutate(json);
         json_parse(a, bytes);
+        free(bytes.str);
+
+        bytes = fuzz_mutate(markup);
+        rich_until(rich_parse(a, bytes, (MarkupKind)(i % 3), 64 + fuzz_rand() % 1000), str8_lit("1.2"));
         free(bytes.str);
         temp_end(t);
     }
@@ -936,6 +1053,7 @@ int main(void)
     test_swap(a);
     test_corrupt_install(a);
     test_backup(a);
+    test_rich(a);
     test_fuzz(a);
     printf("%d/%d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;

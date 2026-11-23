@@ -223,7 +223,7 @@ identifies itself with the user agent `wam/<version> (WoW addon manager)`.
 | `src/core/wago.c` | Wago API calls, key storage (DPAPI) |
 | `src/core/manager.c` | state file, file picking, install / update / remove / sync / search |
 | `src/core/catalog.c` | the catalog Get addons browses: hashed entries, CurseForge / Wago pairs, categories, parallel fetch, disk cache, an addon's details |
-| `src/core/markup.c` | descriptions and changelogs (HTML, BBCode, Markdown) as plain paragraphs and bullets |
+| `src/core/markup.c` | descriptions and changelogs (HTML, BBCode, Markdown) as rich text: blocks of styled spans; `src/gui/rich.c` lays it out and draws it |
 | `src/render/render_d3d11.c` | instanced SDF renderer: rounded rects, cog wheels, diamonds, stars, crescents, leaves, tapered strokes and soft glows, solid or with a gradient; clip batches |
 | `src/font/font_dwrite.c`, `font_dwrite.cpp` | text with DirectWrite: glyphs rasterized on demand into an R8 atlas (natural symmetric antialiasing, fractional advances, 4 sub-pixel positions, Windows font fallback for emoji / CJK / symbols). DirectWrite is C++-only, so `font_dwrite.cpp` is the one C++ file (a small C API, compiled on its own, no exceptions or RTTI) |
 | `src/font/font_gdi.c` | the older GDI backend, same interface (compile with `/DWAM_FONT_GDI`) |
@@ -246,5 +246,5 @@ Give repeated parts their own id scope (`ui_scope_push`, or the key you pass `ui
 - Wago is tested live with a subscriber key: browsing, search, details and installs. Update checks and fingerprint matching follow WowUp's open-source Wago provider and have had less use. An addon on both Wago and CurseForge is paired by name and author (see Catalog), which can miss a pair whose names differ a lot (it then shows as two rows) and, rarely, pair two addons that only look alike.
 - WoWInterface has no search API; wam searches its whole file list locally instead. Its list has no summaries.
 - Tukui reports no download counts, so ElvUI sorts last under Most downloaded (it's first under Best match when you search for it).
-- Descriptions are plain text: headings, links and images inside them aren't drawn as such (links keep their text). Emoji and other characters Segoe UI lacks show as boxes or question marks.
+- Pictures inside descriptions show as their name (click to see one); videos don't show. Only `https://` links in them are clickable. Emoji and other characters Segoe UI lacks show as boxes or question marks.
 - The renderer compiles its shaders at startup (about 30 ms); compiling them when building, with `fxc`, would save that.

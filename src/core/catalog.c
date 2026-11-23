@@ -668,23 +668,17 @@ static void cat_keep_wago(Catalog *c, String8 old_file, GameVersion cv)
 
 //- Details: what the GUI's detail panel shows for one addon
 
+#define CHANGELOG_MAX KB(40)
+
 typedef struct AddonDetails {
     B32 ok;
     String8 error;
-    String8 id, version, description, changelog; // plain text (markup.c)
+    String8 id, version;
+    Rich *description, *changelog;               // 0 or empty: none (markup.c)
     String8 shots;                               // like SearchResult.shots
     String8 website, source_url, issues_url, donate_url;
     S64 favorites;
 } AddonDetails;
-
-// At most max bytes, cut at a character boundary, with "..." when cut.
-static String8 text_cut(Arena *a, String8 s, U64 max)
-{
-    if (s.size <= max) return s;
-    U64 n = max;
-    while (n && (s.str[n] & 0xC0) == 0x80) n -= 1;
-    return str8_pushf(a, "%.*s…", (int)n, s.str);
-}
 
 typedef struct DetailJob { String8 api_key; String8 path; Arena *arena; HTTP_Result r; } DetailJob;
 
@@ -707,7 +701,7 @@ static AddonDetails cat_details(Mgr *m, String8 id)
         os_parallel_for(2, detail_fetch_one, jobs);
         JSON *mod = json_get(json_parse(a, jobs[0].r.body), "data");
         if (!jobs[0].r.ok || mod->type != JSON_OBJ) { d.error = str8_pushf(a, "CurseForge: %.*s", S8F(jobs[0].r.error)); arena_release(jobs[1].arena); return d; }
-        if (jobs[1].r.ok) d.description = markup_cf_html(a, json_str(json_get(json_parse(jobs[1].arena, jobs[1].r.body), "data")));
+        if (jobs[1].r.ok) d.description = markup_cf(a, json_str(json_get(json_parse(jobs[1].arena, jobs[1].r.body), "data")), RICH_TEXT_MAX);
         arena_release(jobs[1].arena);
         SearchResult sr = { 0 };
         cf_search_result(m, mod, &sr);
@@ -721,7 +715,7 @@ static AddonDetails cat_details(Mgr *m, String8 id)
         if (file_id) {
             json_each(f, json_get(mod, "latestFiles")) if (json_int(json_get(f, "id")) == file_id) d.version = json_str(json_get(f, "displayName"));
             HTTP_Result r = cf_call(a, m->api_key, "GET", str8_pushf(a, "/v1/mods/%lld/files/%lld/changelog", mod_id, file_id), str8(0, 0));
-            if (r.ok) d.changelog = markup_cf_html(a, json_str(json_get(json_parse(a, r.body), "data")));
+            if (r.ok) d.changelog = markup_cf(a, json_str(json_get(json_parse(a, r.body), "data")), CHANGELOG_MAX);
         }
         d.ok = 1;
     } else if (id_is(id, "wowi:")) {
@@ -730,8 +724,8 @@ static AddonDetails cat_details(Mgr *m, String8 id)
         JSON *item = json_parse(a, r.body)->first;
         if (!r.ok || !item || item->type != JSON_OBJ) { d.error = str8_pushf(a, "WoWInterface: %.*s", S8F(r.ok ? str8_lit("not found") : r.error)); return d; }
         d.version = json_str(json_get(item, "UIVersion"));
-        d.description = markup_to_text(a, json_str(json_get(item, "UIDescription")), MARKUP_BBCODE);
-        d.changelog = markup_to_text(a, json_str(json_get(item, "UIChangeLog")), MARKUP_BBCODE);
+        d.description = rich_parse(a, json_str(json_get(item, "UIDescription")), MARKUP_BBCODE, RICH_TEXT_MAX);
+        d.changelog = rich_parse(a, json_str(json_get(item, "UIChangeLog")), MARKUP_BBCODE, CHANGELOG_MAX);
         d.favorites = json_int(json_get(item, "UIFavoriteTotal"));
         d.website = str8_pushf(a, "https://www.wowinterface.com/downloads/info%lld", uid);
         d.ok = 1;
@@ -740,12 +734,12 @@ static AddonDetails cat_details(Mgr *m, String8 id)
         HTTP_Result r = wago_addon(a, m->wago_key, m->client, id_rest(id));
         JSON *item = json_parse(a, r.body);
         if (!r.ok || item->type != JSON_OBJ) { d.error = str8_pushf(a, "Wago: %.*s", S8F(r.ok ? str8_lit("unexpected response") : r.error)); return d; }
-        d.description = markup_to_text(a, json_str(json_get(item, "description")), MARKUP_MARKDOWN);
-        if (!d.description.size) d.description = json_str(json_get(item, "summary"));
+        d.description = rich_parse(a, json_str(json_get(item, "description")), MARKUP_MARKDOWN, RICH_TEXT_MAX);
+        if (rich_empty(d.description)) d.description = rich_parse(a, json_str(json_get(item, "summary")), MARKUP_MARKDOWN, RICH_TEXT_MAX);
         JSON *rel = wago_stable_release(json_get(item, "recent_release"));
         if (rel) {
             d.version = json_str(json_get(rel, "label"));
-            d.changelog = markup_to_text(a, json_str(json_get(rel, "changelog")), MARKUP_MARKDOWN);
+            d.changelog = rich_parse(a, json_str(json_get(rel, "changelog")), MARKUP_MARKDOWN, CHANGELOG_MAX);
         }
         String8List shots = { 0 };
         json_each(g, json_get(item, "gallery")) {
@@ -766,7 +760,7 @@ static AddonDetails cat_details(Mgr *m, String8 id)
             tukui_search_result(m, item, &sr);
             d.shots = sr.shots;
             d.version = json_str(json_get(item, "version"));
-            d.description = markup_to_text(a, json_str(json_get(item, "desc")), MARKUP_MARKDOWN);
+            d.description = rich_parse(a, json_str(json_get(item, "desc")), MARKUP_MARKDOWN, RICH_TEXT_MAX);
             d.website = json_str(json_get(item, "web_url"));
             d.source_url = json_str(json_get(item, "git_url"));
             d.issues_url = json_str(json_get(item, "ticket_url"));
@@ -777,7 +771,7 @@ static AddonDetails cat_details(Mgr *m, String8 id)
                 if (r.ok) {
                     JSON *j = json_parse(a, r.body); // the changelog may come as text or wrapped in JSON
                     String8 text = j->type == JSON_STR ? j->str : j->type == JSON_OBJ ? json_str(json_get(j, "changelog")) : r.body;
-                    d.changelog = markup_to_text(a, text, MARKUP_MARKDOWN);
+                    d.changelog = rich_parse(a, text, MARKUP_MARKDOWN, CHANGELOG_MAX);
                 }
             }
             d.ok = 1;
@@ -786,9 +780,6 @@ static AddonDetails cat_details(Mgr *m, String8 id)
     } else {
         d.error = str8_lit("This source has no details to show here; its page has them");
     }
-    // Long texts get cut (the panel lays them out every frame).
-    d.description = text_cut(a, d.description, 24000);
-    d.changelog = text_cut(a, d.changelog, 12000);
     return d;
 }
 
@@ -801,7 +792,7 @@ static AddonDetails cat_details(Mgr *m, String8 id)
 
 #define CHANGES_MAX 10
 
-typedef struct ChangeEntry { String8 version, date, text; } ChangeEntry; // date: YYYY-MM-DD (or empty)
+typedef struct ChangeEntry { String8 version, date; Rich *text; } ChangeEntry; // date: YYYY-MM-DD (or empty)
 
 typedef struct AddonChanges {
     B32 ok;
@@ -812,27 +803,6 @@ typedef struct AddonChanges {
     B32 more;                     // there are older releases after the installed one than shown
     B32 single;                   // the source's one changelog (not one per release)
 } AddonChanges;
-
-// The part of a changelog above the first line (after the first) that names version `from`.
-static String8 changelog_until(String8 text, String8 from)
-{
-    from = str8_trim(from);
-    if (from.size && (from.str[0] == 'v' || from.str[0] == 'V')) from = str8_skip(from, 1);
-    if (from.size < 2) return text;
-    U64 first_eol = str8_find(text, 0, str8_lit("\n"), 0);
-    for (U64 at = str8_find(text, first_eol, from, 1); at < text.size; at = str8_find(text, at + 1, from, 1)) {
-        // Only whole versions: "1.2" mustn't match inside "11.2.5" or "1.25".
-        U8 before = at ? text.str[at - 1] : ' ', after = at + from.size < text.size ? text.str[at + from.size] : ' ';
-        B32 digitish_before = (before >= '0' && before <= '9') || before == '.';
-        B32 digitish_after = (after >= '0' && after <= '9') || (after == '.' && at + from.size + 1 < text.size && text.str[at + from.size + 1] >= '0' && text.str[at + from.size + 1] <= '9');
-        if (digitish_before || digitish_after) continue;
-        U64 line = at;
-        while (line && text.str[line - 1] != '\n') line -= 1;
-        if (line == 0) continue;
-        return str8_trim(str8_prefix(text, line));
-    }
-    return text;
-}
 
 typedef struct ChangelogJob { String8 api_key; S64 mod_id, file_id; Arena *arena; HTTP_Result r; } ChangelogJob;
 
@@ -912,7 +882,7 @@ static void changes_cf(Mgr *m, MgrAddon *e, AddonChanges *c)
         ChangeEntry *ce = &c->v[c->count++];
         ce->version = json_str(json_get(pick[i], "displayName"));
         ce->date = str8_prefix(json_str(json_get(pick[i], "fileDate")), 10);
-        if (jobs[i].r.ok) ce->text = markup_cf_html(a, json_str(json_get(json_parse(jobs[i].arena, jobs[i].r.body), "data")));
+        if (jobs[i].r.ok) ce->text = markup_cf(a, json_str(json_get(json_parse(jobs[i].arena, jobs[i].r.body), "data")), CHANGELOG_MAX);
         arena_release(jobs[i].arena);
     }
     c->ok = 1;
@@ -938,7 +908,7 @@ static void changes_github(Mgr *m, MgrAddon *e, AddonChanges *c)
         ChangeEntry *ce = &c->v[c->count++];
         ce->version = tag.size ? tag : title;
         ce->date = str8_prefix(json_str(json_get(rel, "published_at")), 10);
-        ce->text = markup_to_text(a, json_str(json_get(rel, "body")), MARKUP_MARKDOWN);
+        ce->text = rich_parse(a, json_str(json_get(rel, "body")), MARKUP_MARKDOWN, CHANGELOG_MAX);
     }
     if (!reached && c->count == CHANGES_MAX) c->more = 1;
     c->ok = 1;
@@ -961,11 +931,11 @@ static AddonChanges mgr_changes(Mgr *m, String8 id)
         if (!d.ok) { c.error = d.error; return c; }
         ChangeEntry *ce = &c.v[c.count++];
         ce->version = d.version.size ? d.version : e->latest_version;
-        ce->text = changelog_until(d.changelog, e->version);
+        rich_until(d.changelog, e->version);
+        ce->text = d.changelog;
         c.single = 1;
         c.ok = 1;
     }
-    for (U32 i = 0; i < c.count; i += 1) c.v[i].text = text_cut(a, c.v[i].text, 12000);
     // An update installs the newest release, which may be newer than the last check found.
     if (c.count && c.v[0].version.size && !c.single) c.to = c.v[0].version;
     return c;

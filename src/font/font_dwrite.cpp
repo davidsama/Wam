@@ -71,7 +71,7 @@ extern "C" int fdw_init(void)
     return 1;
 }
 
-static IDWriteFontFace *fdw_open_face(const WCHAR *family, DWRITE_FONT_WEIGHT weight)
+static IDWriteFontFace *fdw_open_face(const WCHAR *family, DWRITE_FONT_WEIGHT weight, int italic)
 {
     UINT32 index = 0;
     BOOL exists = FALSE;
@@ -80,7 +80,7 @@ static IDWriteFontFace *fdw_open_face(const WCHAR *family, DWRITE_FONT_WEIGHT we
     IDWriteFont *font = 0;
     IDWriteFontFace *face = 0;
     if (SUCCEEDED(fdw_system->GetFontFamily(index, &fam)) &&
-        SUCCEEDED(fam->GetFirstMatchingFont(weight, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, &font))) {
+        SUCCEEDED(fam->GetFirstMatchingFont(weight, DWRITE_FONT_STRETCH_NORMAL, italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL, &font))) {
         font->CreateFontFace(&face);
     }
     if (font) font->Release();
@@ -88,12 +88,12 @@ static IDWriteFontFace *fdw_open_face(const WCHAR *family, DWRITE_FONT_WEIGHT we
     return face;
 }
 
-extern "C" FdwFontHandle fdw_font_open(const wchar_t *family, float px, int weight, FdwMetrics *out)
+extern "C" FdwFontHandle fdw_font_open(const wchar_t *family, float px, int weight, int italic, FdwMetrics *out)
 {
     if (!fdw_init()) return 0;
     DWRITE_FONT_WEIGHT w = (DWRITE_FONT_WEIGHT)(weight ? weight : 400);
-    IDWriteFontFace *face = fdw_open_face(family, w);
-    if (!face) face = fdw_open_face(L"Segoe UI", w);
+    IDWriteFontFace *face = fdw_open_face(family, w, italic);
+    if (!face) face = fdw_open_face(L"Segoe UI", w, italic);
     if (!face) return 0;
     FdwFont *f = (FdwFont *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(FdwFont)); // no C++ runtime needed
     if (!f) { face->Release(); return 0; }

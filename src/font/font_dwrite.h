@@ -18,7 +18,7 @@ typedef struct FdwGlyph {
 
 int  fdw_init(void);
 // family e.g. L"Segoe UI"; weight like CSS (400 normal, 600 semibold, 700 bold).
-FdwFontHandle fdw_font_open(const wchar_t *family, float px, int weight, FdwMetrics *out);
+FdwFontHandle fdw_font_open(const wchar_t *family, float px, int weight, int italic, FdwMetrics *out);
 void fdw_font_close(FdwFontHandle f);
 // Rasterizes one character at a sub-pixel x offset (0..1) into buf (8-bit coverage, w*h bytes,
 // row pitch w). Returns 0 if buf (cap bytes) is too small.

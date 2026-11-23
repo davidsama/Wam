@@ -57,10 +57,10 @@ static B32 f_family_installed(wchar_t *family)
     return found;
 }
 
-static F_Font *f_font_open(Arena *a, wchar_t *face, F32 px, int weight)
+static F_Font *f_font_open(Arena *a, wchar_t *face, F32 px, int weight, B32 italic)
 {
     F_Font *f = push_struct(a, F_Font);
-    f->hfont = CreateFontW(-(int)(px + 0.5f), 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET, OUT_TT_PRECIS,
+    f->hfont = CreateFontW(-(int)(px + 0.5f), 0, 0, 0, weight, italic, 0, 0, DEFAULT_CHARSET, OUT_TT_PRECIS,
                            CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, face);
     SelectObject(f_dc, f->hfont);
     TEXTMETRICW tm;

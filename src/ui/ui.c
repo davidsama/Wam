@@ -287,21 +287,29 @@ static void ui_fonts_load(void)
     if (ui.font_arena) {
         f_font_close(ui.font.normal); f_font_close(ui.font.bold); f_font_close(ui.font.caption);
         f_font_close(ui.font.title); f_font_close(ui.font.icon); f_font_close(ui.font.glyphs); f_font_close(ui.font.glyphs_big);
+        f_font_close(ui.font.italic); f_font_close(ui.font.mono); f_font_close(ui.font.caption_bold);
+        f_font_close(ui.font.caption_italic); f_font_close(ui.font.caption_mono);
         arena_clear(ui.font_arena);
     } else {
         ui.font_arena = arena_alloc(MB(64));
     }
     f_atlas_reset();
     F32 s = ui.scale;
-    ui.font.normal = f_font_open(ui.font_arena, L"Segoe UI", 14 * s, 400);
-    ui.font.bold   = f_font_open(ui.font_arena, L"Segoe UI", 14 * s, 600);
-    ui.font.caption  = f_font_open(ui.font_arena, L"Segoe UI", 12 * s, 400);
-    ui.font.title  = f_font_open(ui.font_arena, L"Segoe UI", 17 * s, 600);
-    ui.font.icon   = f_font_open(ui.font_arena, L"Segoe UI Symbol", 12 * s, 700);
+    ui.font.normal = f_font_open(ui.font_arena, L"Segoe UI", 14 * s, 400, 0);
+    ui.font.bold   = f_font_open(ui.font_arena, L"Segoe UI", 14 * s, 600, 0);
+    ui.font.caption  = f_font_open(ui.font_arena, L"Segoe UI", 12 * s, 400, 0);
+    ui.font.title  = f_font_open(ui.font_arena, L"Segoe UI", 17 * s, 600, 0);
+    ui.font.icon   = f_font_open(ui.font_arena, L"Segoe UI Symbol", 12 * s, 700, 0);
     // Windows 11's caption glyphs; Windows 10 has the older MDL2 ones (same code points).
     wchar_t *glyph_family = f_family_installed(L"Segoe Fluent Icons") ? L"Segoe Fluent Icons" : L"Segoe MDL2 Assets";
-    ui.font.glyphs = f_font_open(ui.font_arena, glyph_family, 10 * s, 400);
-    ui.font.glyphs_big = f_font_open(ui.font_arena, glyph_family, 14 * s, 400);
+    ui.font.glyphs = f_font_open(ui.font_arena, glyph_family, 10 * s, 400, 0);
+    ui.font.glyphs_big = f_font_open(ui.font_arena, glyph_family, 14 * s, 400, 0);
+    // Rich text (descriptions, changelogs).
+    ui.font.italic         = f_font_open(ui.font_arena, L"Segoe UI", 14 * s, 400, 1);
+    ui.font.mono           = f_font_open(ui.font_arena, L"Consolas", 13 * s, 400, 0);
+    ui.font.caption_bold   = f_font_open(ui.font_arena, L"Segoe UI", 12 * s, 600, 0);
+    ui.font.caption_italic = f_font_open(ui.font_arena, L"Segoe UI", 12 * s, 400, 1);
+    ui.font.caption_mono   = f_font_open(ui.font_arena, L"Consolas", 11.5f * s, 400, 0);
 }
 
 //- Ornaments

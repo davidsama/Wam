@@ -107,7 +107,7 @@ static B32 draw_changes(void)
             F32 vx = f_draw_text(ui.font.bold, x, cy, ce->version.size ? ce->version : str8_lit("Latest"), ui.theme.heading, tw);
             if (ce->date.size) f_draw_text(ui.font.caption, vx + 10 * s, cy + (ui.font.bold->line_height - ui.font.caption->line_height) * 0.5f, ce->date, C_FAINT, 0);
             cy += ui.font.bold->line_height + 6 * s;
-            if (ce->text.size) cy += ui_text_wrapped(ui.font.caption, x, cy, tw, ce->text, C_DIM, body.y0, body.y1);
+            if (!rich_empty(ce->text)) cy += rich_draw(ce->text, x, cy, tw, 1, body.y0, body.y1, 0);
             else { f_draw_text(ui.font.caption, x, cy, str8_lit("No notes for this release."), C_FAINT, tw); cy += ui.font.caption->line_height; }
             cy += 22 * s;
         }

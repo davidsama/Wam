@@ -78,11 +78,11 @@ static B32 f_family_installed(wchar_t *family)
     return found;
 }
 
-static F_Font *f_font_open(Arena *a, wchar_t *face, F32 px, int weight)
+static F_Font *f_font_open(Arena *a, wchar_t *face, F32 px, int weight, B32 italic)
 {
     F_Font *f = push_struct(a, F_Font);
     FdwMetrics m = { 0 };
-    f->dw = fdw_font_open(face, px, weight, &m);
+    f->dw = fdw_font_open(face, px, weight, italic, &m);
     f->ascent = (F32)(int)(m.ascent + 0.5f);
     f->descent = (F32)(int)(m.descent + 0.5f);
     f->line_height = (F32)(int)(m.ascent + m.descent + m.line_gap + 0.5f);

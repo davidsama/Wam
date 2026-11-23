@@ -53,7 +53,11 @@ enum {
 // caption: the 12px font for secondary text ("small" would collide with a macro in rpcndr.h).
 // glyphs: Windows' own icon font (Segoe Fluent Icons, else Segoe MDL2 Assets): 10px for the window
 // buttons, glyphs_big (14px) for icons in rows.
-typedef struct UI_Fonts { F_Font *normal, *bold, *caption, *title, *icon, *glyphs, *glyphs_big; } UI_Fonts;
+// italic, mono and the caption ones: for rich text.
+typedef struct UI_Fonts {
+    F_Font *normal, *bold, *caption, *title, *icon, *glyphs, *glyphs_big;
+    F_Font *italic, *mono, *caption_bold, *caption_italic, *caption_mono;
+} UI_Fonts;
 
 // A widget's identity from one frame to the next: a hash of its label (or a name, or an address)
 // within the current scope (ui_scope_push). 0 = none.
