@@ -228,6 +228,20 @@ static String8 rich_host(String8 url)
     return str8_starts_with(h, str8_lit("www."), 1) ? str8_skip(h, 4) : h;
 }
 
+// Pictures in a text load by themselves (when scrolled to) only from the addon sites, which wam talks to
+// anyway: any other host would learn who reads about which addon. Those show as their name, to click.
+static B32 rich_addon_site(String8 url)
+{
+    static char *sites[] = { "forgecdn.net", "curseforge.com", "wowinterface.com", "wago.io", "tukui.org" };
+    if (!str8_starts_with(url, str8_lit("https://"), 1)) return 0;
+    String8 h = rich_host(url);
+    for (U32 i = 0; i < ArrayCount(sites); i += 1) {
+        String8 site = str8_cstring(sites[i]);
+        if (str8_ends_with(h, site, 1) && (h.size == site.size || h.str[h.size - site.size - 1] == '.')) return str8_find(h, 0, str8_lit("@"), 0) >= h.size;
+    }
+    return 0;
+}
+
 static void rich_image(RichBuild *b, String8 src, String8 alt)
 {
     String8 url = rich_url(b->a, src);

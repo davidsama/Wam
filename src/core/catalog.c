@@ -688,7 +688,7 @@ static void detail_fetch_one(void *user, U64 i)
     j->r = cf_call(j->arena, j->api_key, "GET", j->path, str8(0, 0));
 }
 
-static AddonDetails cat_details(Mgr *m, String8 id)
+static AddonDetails cat_details_get(Mgr *m, String8 id)
 {
     Arena *a = m->arena;
     AddonDetails d = { 0 };
@@ -726,6 +726,9 @@ static AddonDetails cat_details(Mgr *m, String8 id)
         d.version = json_str(json_get(item, "UIVersion"));
         d.description = rich_parse(a, json_str(json_get(item, "UIDescription")), MARKUP_BBCODE, RICH_TEXT_MAX);
         d.changelog = rich_parse(a, json_str(json_get(item, "UIChangeLog")), MARKUP_BBCODE, CHANGELOG_MAX);
+        String8List shots = { 0 };
+        json_each(img, json_get(item, "UIIMGs")) if (shots.count < SHOTS_MAX && json_str(img).size) shots_push(a, &shots, json_str(img), str8(0, 0));
+        d.shots = shots_join(a, &shots); // (empty: the catalog's are shown)
         d.favorites = json_int(json_get(item, "UIFavoriteTotal"));
         d.website = str8_pushf(a, "https://www.wowinterface.com/downloads/info%lld", uid);
         d.ok = 1;
@@ -744,7 +747,7 @@ static AddonDetails cat_details(Mgr *m, String8 id)
         String8List shots = { 0 };
         json_each(g, json_get(item, "gallery")) {
             String8 type = json_str(json_get(g, "type")), path = json_str(json_get(g, "path"));
-            if (shots.count < 6 && (!type.size || str8_match(type, str8_lit("image"), 1)) && str8_starts_with(path, str8_lit("https://"), 1)) shots_push(a, &shots, path, str8(0, 0));
+            if (shots.count < SHOTS_MAX && (!type.size || str8_match(type, str8_lit("image"), 1)) && str8_starts_with(path, str8_lit("https://"), 1)) shots_push(a, &shots, path, str8(0, 0));
         }
         d.shots = shots_join(a, &shots);
         d.website = json_str(json_get(item, "website_url"));
@@ -780,6 +783,14 @@ static AddonDetails cat_details(Mgr *m, String8 id)
     } else {
         d.error = str8_lit("This source has no details to show here; its page has them");
     }
+    return d;
+}
+
+static AddonDetails cat_details(Mgr *m, String8 id)
+{
+    m->all_shots = 1;
+    AddonDetails d = cat_details_get(m, id);
+    m->all_shots = 0;
     return d;
 }
 

@@ -240,7 +240,8 @@ typedef struct App {
     UI_Scroll detail_scroll;
     // The picture viewer: a screenshot at full size over the window (draw_viewer).
     B32 viewer_open;
-    char viewer_urls[6][1024];
+    U32 gallery_index, gallery_first; // the detail panel's screenshots: the one shown, the filmstrip's first
+    char viewer_urls[SHOTS_MAX][1024];
     U32 viewer_count, viewer_index;
     B32 viewer_fresh;          // opened this frame (by a click the viewer mustn't see)
     F32 detail_share;          // the panel's share of the view's width (dragged; saved in settings.json), 0 = default

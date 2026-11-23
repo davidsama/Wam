@@ -8,14 +8,15 @@
 //
 // Three textures: the glyph atlas (8-bit coverage, point-sampled), the image
 // atlas (BGRA with straight alpha, linear-sampled) for small pictures such as
-// icons, and one full-size picture (sized to it, e.g. a screenshot being viewed).
+// icons, and pictures with a texture each (R_Picture, e.g. a screenshot being viewed; with
+// mipmaps, so a big one drawn small is smooth). A batch draws at most one of those.
 // Picture rects are still clipped by the SDF, so they get rounded corners.
 
 typedef struct R_Rect {
     F32 dst[4];
     F32 src[4];
     F32 color[4];
-    F32 params[4]; // radius, border, softness, texture (0 none, 1 glyph atlas, 2 image atlas, 3 the picture)
+    F32 params[4]; // radius, border, softness, texture (0 none, 1 glyph atlas, 2 image atlas, 3 the batch's picture)
     F32 color2[4]; // the gradient's end color (= color for a solid fill)
     F32 shape[4];  // R_SHAPE_*, then: rect: 1 = the gradient runs left to right (else top to bottom);
                    // cog: teeth, root radius / outer radius, rotation (radians)
@@ -27,7 +28,8 @@ typedef struct R_Rect {
 
 enum { R_SHAPE_RECT, R_SHAPE_COG, R_SHAPE_DIAMOND, R_SHAPE_STAR, R_SHAPE_CRESCENT, R_SHAPE_LEAF, R_SHAPE_TAPER };
 
-typedef struct R_Batch { U32 first, count; Rect clip; } R_Batch;
+typedef struct R_Picture { ID3D11Texture2D *tex; ID3D11ShaderResourceView *srv; U32 w, h; } R_Picture; // srv 0: none
+typedef struct R_Batch { U32 first, count; Rect clip; ID3D11ShaderResourceView *picture; } R_Batch;
 
 #define R_MAX_RECTS   (1 << 16)
 #define R_MAX_BATCHES 1024
@@ -51,9 +53,6 @@ typedef struct R_State {
     ID3D11Texture2D *images;
     ID3D11ShaderResourceView *images_srv;
     U32 images_w, images_h;
-    ID3D11Texture2D *picture;
-    ID3D11ShaderResourceView *picture_srv;
-    U32 picture_w, picture_h;
     U32 width, height;   // what is drawn: the window's client size
     U64 us_resize, us_present;   // how long the last resize and present took (profiling)
     R_Rect rects[R_MAX_RECTS];
@@ -275,6 +274,7 @@ static B32 r_init(void *window, U32 atlas_w, U32 atlas_h)
     smp.AddressU = smp.AddressV = smp.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     ID3D11Device_CreateSamplerState(r->device, &smp, &r->sampler);
     smp.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    smp.MaxLOD = D3D11_FLOAT32_MAX; // pictures' mipmaps
     ID3D11Device_CreateSamplerState(r->device, &smp, &r->sampler_linear);
 
     D3D11_TEXTURE2D_DESC td = { 0 };
@@ -346,6 +346,7 @@ static void r_set_clip(Rect clip)
     b->first = r->rect_count;
     b->count = 0;
     b->clip = clip;
+    b->picture = 0;
 }
 
 static void r_begin_frame(void)
@@ -485,32 +486,47 @@ static void r_glyph(Rect dst, Rect src, V4 color)
     r->params[3] = 1;
 }
 
-// Replaces the full-size picture with w x h BGRA pixels (straight alpha); recreated when the size changes.
-static B32 r_picture_set(U32 w, U32 h, U8 *pixels)
+static void r_picture_free(R_Picture *p)
+{
+    if (p->srv) ID3D11ShaderResourceView_Release(p->srv);
+    if (p->tex) ID3D11Texture2D_Release(p->tex);
+    *p = (R_Picture){ 0 };
+}
+
+// A texture of w x h BGRA pixels (straight alpha). Between frames only, like r_picture_free.
+static R_Picture r_picture_make(U32 w, U32 h, U8 *pixels)
 {
     R_State *r = r_state;
-    if (r->picture && (r->picture_w != w || r->picture_h != h)) {
-        ID3D11ShaderResourceView_Release(r->picture_srv); r->picture_srv = 0;
-        ID3D11Texture2D_Release(r->picture); r->picture = 0;
-    }
-    if (!r->picture) {
+    R_Picture p = { 0 };
+    for (int mips = 1; mips >= 0 && !p.srv; mips -= 1) { // without mipmaps, if the GPU can't make them
         D3D11_TEXTURE2D_DESC td = { 0 };
-        td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1;
+        td.Width = w; td.Height = h; td.MipLevels = mips ? 0 : 1; td.ArraySize = 1;
         td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         td.SampleDesc.Count = 1;
         td.Usage = D3D11_USAGE_DEFAULT;
-        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        if (FAILED(ID3D11Device_CreateTexture2D(r->device, &td, 0, &r->picture))) { r->picture = 0; return 0; }
-        ID3D11Device_CreateShaderResourceView(r->device, (ID3D11Resource *)r->picture, 0, &r->picture_srv);
-        r->picture_w = w; r->picture_h = h;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE | (mips ? D3D11_BIND_RENDER_TARGET : 0);
+        td.MiscFlags = mips ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0;
+        if (FAILED(ID3D11Device_CreateTexture2D(r->device, &td, 0, &p.tex))) { p.tex = 0; continue; }
+        if (FAILED(ID3D11Device_CreateShaderResourceView(r->device, (ID3D11Resource *)p.tex, 0, &p.srv))) { p.srv = 0; r_picture_free(&p); continue; }
+        ID3D11DeviceContext_UpdateSubresource(r->ctx, (ID3D11Resource *)p.tex, 0, 0, pixels, w * 4, 0);
+        if (mips) ID3D11DeviceContext_GenerateMips(r->ctx, p.srv);
+        p.w = w; p.h = h;
     }
-    ID3D11DeviceContext_UpdateSubresource(r->ctx, (ID3D11Resource *)r->picture, 0, 0, pixels, w * 4, 0);
-    return 1;
+    return p;
 }
 
-// The full-size picture, stretched to dst.
-static void r_picture(Rect dst, V4 tint, F32 radius)
+// The picture, stretched to dst.
+static void r_picture(R_Picture *p, Rect dst, V4 tint, F32 radius)
 {
+    R_State *s = r_state;
+    R_Batch *b = &s->batches[s->batch_count - 1];
+    if (b->picture && b->picture != p->srv) {
+        if (s->batch_count >= R_MAX_BATCHES) return;
+        R_Batch *n = &s->batches[s->batch_count++];
+        n->first = s->rect_count; n->count = 0; n->clip = b->clip;
+        b = n;
+    }
+    b->picture = p->srv;
     R_Rect *r = r_push();
     r->dst[0] = dst.x0; r->dst[1] = dst.y0; r->dst[2] = dst.x1; r->dst[3] = dst.y1;
     r->src[0] = 0; r->src[1] = 0; r->src[2] = 1; r->src[3] = 1;
@@ -593,9 +609,9 @@ static void r_end_frame(V4 clear)
     ID3D11DeviceContext_VSSetShader(ctx, r->vs, 0, 0);
     ID3D11DeviceContext_VSSetConstantBuffers(ctx, 0, 1, &r->globals);
     ID3D11DeviceContext_PSSetShader(ctx, r->ps, 0, 0);
-    ID3D11ShaderResourceView *srvs[3] = { r->atlas_srv, r->images_srv, r->picture_srv };
+    ID3D11ShaderResourceView *srvs[2] = { r->atlas_srv, r->images_srv };
     ID3D11SamplerState *samplers[2] = { r->sampler, r->sampler_linear };
-    ID3D11DeviceContext_PSSetShaderResources(ctx, 0, 3, srvs);
+    ID3D11DeviceContext_PSSetShaderResources(ctx, 0, 2, srvs);
     ID3D11DeviceContext_PSSetSamplers(ctx, 0, 2, samplers);
 
     for (U32 i = 0; i < r->batch_count; i += 1) {
@@ -603,6 +619,7 @@ static void r_end_frame(V4 clear)
         if (!b->count) continue;
         D3D11_RECT sc = { (LONG)b->clip.x0, (LONG)b->clip.y0, (LONG)b->clip.x1, (LONG)b->clip.y1 };
         ID3D11DeviceContext_RSSetScissorRects(ctx, 1, &sc);
+        if (b->picture) ID3D11DeviceContext_PSSetShaderResources(ctx, 2, 1, &b->picture);
         ID3D11DeviceContext_DrawInstanced(ctx, 4, b->count, 0, b->first);
     }
     if (r_shot_path[0]) { r_save_shot(); r_shot_path[0] = 0; }

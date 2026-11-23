@@ -2,7 +2,8 @@
 //
 // ui_image(dst, url, kind, ...) draws the picture if it's loaded and otherwise asks for it, so a
 // view just calls it every frame for what's on screen. ui_image_full(area, url, ...) does the same
-// for one picture at full size (a screenshot being viewed), fitted inside area. Loader threads fetch the bytes through the
+// for one picture at full size (a screenshot being viewed), fitted inside area, and ui_picture for whole
+// pictures shown smaller (a gallery's, those in a text). Loader threads fetch the bytes through the
 // app's ui_image_fetch callback (which can cache them on disk), decode them (os_image_decode), scale them to
 // the kind's slot size (icons: square, cropped to fill; thumbnails: 16:9, cropped to fill) and post
 // the pixels to the UI thread, which copies them into the renderer's image atlas.
@@ -17,7 +18,7 @@
 //
 // Needs: render (r_image, r_images_update, R_IMAGES_SIZE), wm_post, and os_image_decode.
 
-typedef enum UI_ImageKind { UI_IMG_ICON, UI_IMG_THUMB, UI_IMG_FULL, UI_IMG_KIND_COUNT } UI_ImageKind;
+typedef enum UI_ImageKind { UI_IMG_ICON, UI_IMG_THUMB, UI_IMG_FULL, UI_IMG_FIT, UI_IMG_KIND_COUNT } UI_ImageKind;
 
 // Returns the bytes at url (in a), or empty. Called on loader threads.
 typedef String8 UI_ImageFetch(Arena *a, String8 url);
@@ -29,6 +30,10 @@ static String8 ui_image_log;
 #define UI_IMG_THUMB_W   320            // thumbnail slots: 320x180, the bottom half
 #define UI_IMG_THUMB_H   180
 #define UI_IMG_FULL_MAX  2560           // the full-size picture: at most this wide or tall (its own texture)
+#define UI_IMG_FIT_MAX   1280           // ui_picture's: at most this wide or tall (a texture each)
+#define UI_IMG_FITS      48             // how many are kept, and at most UI_IMG_FIT_BYTES of them
+#define UI_IMG_FIT_BYTES MB(128)
+#define UI_IMG_SIZES     1024           // pictures whose size is remembered, loaded or not
 #define UI_IMG_THREADS   4
 #define UI_IMG_QUEUE     256
 #define UI_IMG_FAILED    1024
@@ -39,7 +44,7 @@ typedef struct UI_ImageSlot {
     U8 state;               // 1 loading, 2 ready
     volatile U64 used_ms;   // last drawn (loader threads read it to skip stale requests)
     U16 x, y;               // in the atlas
-    U16 w, h;               // the full-size picture: its size
+    R_Picture picture;      // full size and fitted ones: the texture
 } UI_ImageSlot;
 
 typedef struct UI_ImageRequest { U64 key; int kind; U32 slot; char url[1024]; } UI_ImageRequest;
@@ -52,7 +57,10 @@ static struct {
     B32 started;
     UI_ImageSlot icons[UI_IMG_ICON_SLOTS];
     UI_ImageSlot thumbs[UI_IMG_THUMB_SLOTS];
-    UI_ImageSlot full;
+    UI_ImageSlot full, fits[UI_IMG_FITS];
+    struct { U64 key; U16 w, h; } sizes[UI_IMG_SIZES]; // of fitted pictures
+    U32 sizes_next;
+    U32 changes;            // goes up when a fitted picture's size becomes known, or it fails
     U64 failed[UI_IMG_FAILED];
     U32 failed_next;
     OS_Mutex lock;          // the queue
@@ -68,10 +76,22 @@ static U64 ui_image_key(String8 url)
     return h ? h : 1;
 }
 
+// Failures are kept apart for the small kinds and the big ones (which take bigger files).
+static B32 ui_image_big(int kind) { return kind == UI_IMG_FULL || kind == UI_IMG_FIT; }
+static U64 ui_image_fail_key(U64 key, int kind) { return ui_image_big(kind) ? ~key : key; }
+
+static B32 ui_image_has_failed(U64 key, int kind)
+{
+    key = ui_image_fail_key(key, kind);
+    for (U32 i = 0; i < UI_IMG_FAILED; i += 1) if (ui_img.failed[i] == key) return 1;
+    return 0;
+}
+
 static UI_ImageSlot *ui_image_slots(int kind, U32 *count)
 {
     if (kind == UI_IMG_ICON) { *count = UI_IMG_ICON_SLOTS; return ui_img.icons; }
     if (kind == UI_IMG_FULL) { *count = 1; return &ui_img.full; }
+    if (kind == UI_IMG_FIT) { *count = UI_IMG_FITS; return ui_img.fits; }
     *count = UI_IMG_THUMB_SLOTS; return ui_img.thumbs;
 }
 
@@ -113,8 +133,8 @@ static U32 ui_image_thread(void *p)
         os_mutex_unlock(&ui_img.lock);
         if (!have) continue;
 
-        U32 w = req.kind == UI_IMG_ICON ? UI_IMG_ICON_PX : req.kind == UI_IMG_FULL ? UI_IMG_FULL_MAX : UI_IMG_THUMB_W;
-        U32 h = req.kind == UI_IMG_ICON ? UI_IMG_ICON_PX : req.kind == UI_IMG_FULL ? UI_IMG_FULL_MAX : UI_IMG_THUMB_H;
+        U32 w = req.kind == UI_IMG_ICON ? UI_IMG_ICON_PX : req.kind == UI_IMG_FULL ? UI_IMG_FULL_MAX : req.kind == UI_IMG_FIT ? UI_IMG_FIT_MAX : UI_IMG_THUMB_W;
+        U32 h = req.kind == UI_IMG_ICON ? UI_IMG_ICON_PX : req.kind == UI_IMG_FULL ? UI_IMG_FULL_MAX : req.kind == UI_IMG_FIT ? UI_IMG_FIT_MAX : UI_IMG_THUMB_H;
         U32 count;
         UI_ImageSlot *slot = &ui_image_slots(req.kind, &count)[req.slot];
         UI_ImageResult *res = 0;
@@ -122,9 +142,9 @@ static U32 ui_image_thread(void *p)
             arena_clear(a);
             String8 url = str8_cstring(req.url);
             String8 data = str8_starts_with(url, str8_lit("res:"), 0) ? os_resource(str8_skip(url, 4)) : ui_image_fetch(a, url);
-            if (data.size && data.size <= UI_IMG_MAX_BYTES * (req.kind == UI_IMG_FULL ? 4 : 1)) res = ui_image_decode(a, data, w, h, req.kind == UI_IMG_FULL);
+            if (data.size && data.size <= UI_IMG_MAX_BYTES * (ui_image_big(req.kind) ? 4 : 1)) res = ui_image_decode(a, data, w, h, ui_image_big(req.kind));
             if (res) res->ok = 1;
-            else ui_image_log_failure(url, !data.size ? "fetch failed" : data.size > UI_IMG_MAX_BYTES * (req.kind == UI_IMG_FULL ? 4 : 1) ? "too big" : "decode failed", data.size);
+            else ui_image_log_failure(url, !data.size ? "fetch failed" : data.size > UI_IMG_MAX_BYTES * (ui_image_big(req.kind) ? 4 : 1) ? "too big" : "decode failed", data.size);
         } else {
             res = (UI_ImageResult *)os_alloc(sizeof(UI_ImageResult));
             if (res) res->skipped = 1;
@@ -156,6 +176,48 @@ static void ui_image_start(void)
     for (U32 t = 0; t < UI_IMG_THREADS; t += 1) os_thread_start(ui_image_thread, 0);
 }
 
+static B32 ui_image_url_ok(String8 url)
+{
+    return str8_starts_with(url, str8_lit("https://"), 1) && url.size < sizeof(((UI_ImageRequest *)0)->url);
+}
+
+// w x h as big as fits inside area, at most max_scale times its size, centered, on whole pixels.
+static Rect ui_image_fit(Rect area, U32 pw, U32 ph, F32 max_scale)
+{
+    F32 aw = area.x1 - area.x0, ah = area.y1 - area.y0;
+    F32 k = Min(max_scale, Min(aw / (F32)pw, ah / (F32)ph));
+    F32 w = (F32)pw * k, h = (F32)ph * k;
+    F32 x = (F32)(int)(area.x0 + (aw - w) * 0.5f), y = (F32)(int)(area.y0 + (ah - h) * 0.5f);
+    return rect(x, y, x + w, y + h);
+}
+
+static void ui_image_size_set(U64 key, U32 w, U32 h)
+{
+    for (U32 i = 0; i < UI_IMG_SIZES; i += 1) if (ui_img.sizes[i].key == key) return;
+    U32 i = ui_img.sizes_next++ % UI_IMG_SIZES;
+    ui_img.sizes[i].key = key; ui_img.sizes[i].w = (U16)w; ui_img.sizes[i].h = (U16)h;
+    ui_img.changes += 1;
+}
+
+// Keeps the fitted pictures within UI_IMG_FIT_BYTES: the least recently drawn ones go, but none on screen.
+static void ui_image_fits_trim(void)
+{
+    U64 now = os_now_ms();
+    for (;;) {
+        U64 bytes = 0;
+        UI_ImageSlot *oldest = 0;
+        for (U32 i = 0; i < UI_IMG_FITS; i += 1) {
+            UI_ImageSlot *sl = &ui_img.fits[i];
+            if (sl->state != 2) continue;
+            bytes += (U64)sl->picture.w * sl->picture.h * 4 * 4 / 3; // with its mipmaps
+            if (now - sl->used_ms > 2000 && (!oldest || sl->used_ms < oldest->used_ms)) oldest = sl;
+        }
+        if (bytes <= UI_IMG_FIT_BYTES || !oldest) return;
+        r_picture_free(&oldest->picture);
+        oldest->key = 0; oldest->state = 0;
+    }
+}
+
 // A loader thread's result, on the UI thread (wm_post).
 static void ui_image_arrived(U64 param, void *ptr)
 {
@@ -165,15 +227,20 @@ static void ui_image_arrived(U64 param, void *ptr)
     UI_ImageSlot *slots = ui_image_slots(res->kind, &count);
     UI_ImageSlot *slot = res->slot < count ? &slots[res->slot] : 0;
     if (slot && slot->key == res->key && slot->state == 1) {
-        if (res->ok && res->kind == UI_IMG_FULL) {
-            slot->state = r_picture_set(res->w, res->h, res->pixels) ? 2 : 0;
-            slot->w = (U16)res->w; slot->h = (U16)res->h;
-            if (!slot->state) slot->key = 0;
+        if (res->ok && ui_image_big(res->kind)) {
+            r_picture_free(&slot->picture);
+            slot->picture = r_picture_make(res->w, res->h, res->pixels);
+            slot->state = slot->picture.srv ? 2 : 0;
+            if (!slot->state) { slot->key = 0; ui_img.failed[ui_img.failed_next++ % UI_IMG_FAILED] = ui_image_fail_key(res->key, res->kind); }
+            if (res->kind == UI_IMG_FIT) {
+                ui_image_size_set(res->key, res->w, res->h);
+                ui_image_fits_trim();
+            }
         } else if (res->ok) {
             r_images_update(slot->x, slot->y, res->w, res->h, res->pixels, res->w * 4);
             slot->state = 2;
         } else {
-            if (!res->skipped) { ui_img.failed[ui_img.failed_next++ % UI_IMG_FAILED] = res->key; }
+            if (!res->skipped) { ui_img.failed[ui_img.failed_next++ % UI_IMG_FAILED] = ui_image_fail_key(res->key, res->kind); ui_img.changes += 1; }
             slot->key = 0; slot->state = 0;
         }
         wm_request_frame();
@@ -190,7 +257,7 @@ static B32 ui_image(Rect dst, String8 url, UI_ImageKind kind, F32 radius, V4 tin
     if (!url.size || !r_state->images) return 0;
     ui_image_start();
     U64 key = ui_image_key(url), now = os_now_ms();
-    for (U32 i = 0; i < UI_IMG_FAILED; i += 1) if (ui_img.failed[i] == key) return 0;
+    if (ui_image_has_failed(key, kind)) return 0;
     if (!(str8_starts_with(url, str8_lit("https://"), 1) || str8_starts_with(url, str8_lit("res:"), 0)) || url.size >= sizeof(((UI_ImageRequest *)0)->url)) {
         ui_img.failed[ui_img.failed_next++ % UI_IMG_FAILED] = key; // never loadable: don't look again
         ui_image_log_failure(url, "refused (not https:// or too long)", 0);
@@ -222,30 +289,65 @@ static B32 ui_image(Rect dst, String8 url, UI_ImageKind kind, F32 radius, V4 tin
 // (*drawn: where). Returns 0 while it loads (or if it can't). One such picture is kept at a time.
 static B32 ui_image_full(Rect area, String8 url, F32 radius, Rect *drawn)
 {
-    if (!url.size || !str8_starts_with(url, str8_lit("https://"), 1) || url.size >= sizeof(((UI_ImageRequest *)0)->url)) return 0;
+    if (!ui_image_url_ok(url)) return 0;
     ui_image_start();
     U64 key = ui_image_key(url), now = os_now_ms();
-    for (U32 i = 0; i < UI_IMG_FAILED; i += 1) if (ui_img.failed[i] == key) return 0;
+    if (ui_image_has_failed(key, UI_IMG_FULL)) return 0;
     UI_ImageSlot *slot = &ui_img.full;
     if (slot->key != key) { ui_image_request(slot, 0, key, UI_IMG_FULL, url); return 0; }
     slot->used_ms = now;
     if (slot->state != 2) return 0;
-    F32 aw = area.x1 - area.x0, ah = area.y1 - area.y0;
-    F32 k = Min(1.0f, Min(aw / slot->w, ah / slot->h));
-    F32 w = slot->w * k, h = slot->h * k;
-    F32 x = (F32)(int)(area.x0 + (aw - w) * 0.5f), y = (F32)(int)(area.y0 + (ah - h) * 0.5f);
-    Rect r = rect(x, y, x + w, y + h);
-    r_picture(r, ui_hex(0xffffff, 1), radius);
+    Rect r = ui_image_fit(area, slot->picture.w, slot->picture.h, 1);
+    r_picture(&slot->picture, r, ui_hex(0xffffff, 1), radius);
     if (drawn) *drawn = r;
     return 1;
 }
 
-// Whether url failed to load (so the caller can say so instead of "loading").
-static B32 ui_image_failed(String8 url)
+// A whole picture, kept small enough to have several (UI_IMG_FIT_MAX): draws it into area like
+// ui_image_full, but scaled up at most max_scale times. Returns 0 while it loads (or if it can't).
+static B32 ui_picture(Rect area, String8 url, F32 max_scale, F32 radius, Rect *drawn)
+{
+    if (!ui_image_url_ok(url)) return 0;
+    ui_image_start();
+    U64 key = ui_image_key(url), now = os_now_ms();
+    if (ui_image_has_failed(key, UI_IMG_FIT)) return 0;
+    UI_ImageSlot *slot = 0, *victim = 0;
+    for (U32 i = 0; i < UI_IMG_FITS; i += 1) {
+        UI_ImageSlot *sl = &ui_img.fits[i];
+        if (sl->key == key) { slot = sl; break; }
+        if (!sl->key) { if (!victim || victim->key) victim = sl; }
+        else if (sl->state == 2 && now - sl->used_ms > 250 && (!victim || (victim->key && sl->used_ms < victim->used_ms))) victim = sl;
+    }
+    if (!slot) {
+        // (A victim's texture may be in this frame's batches only if it was drawn just now: then it isn't one.)
+        if (victim) { r_picture_free(&victim->picture); ui_image_request(victim, (U32)(victim - ui_img.fits), key, UI_IMG_FIT, url); }
+        return 0;
+    }
+    slot->used_ms = now;
+    if (slot->state != 2) return 0;
+    Rect r = ui_image_fit(area, slot->picture.w, slot->picture.h, max_scale);
+    r_picture(&slot->picture, r, ui_hex(0xffffff, 1), radius);
+    if (drawn) *drawn = r;
+    return 1;
+}
+
+// The size of a picture ui_picture has loaded (it may be gone again). 0 if it isn't known.
+static B32 ui_picture_size(String8 url, U32 *w, U32 *h)
 {
     U64 key = ui_image_key(url);
-    for (U32 i = 0; i < UI_IMG_FAILED; i += 1) if (ui_img.failed[i] == key) return 1;
+    for (U32 i = 0; i < UI_IMG_SIZES; i += 1) if (ui_img.sizes[i].key == key) { *w = ui_img.sizes[i].w; *h = ui_img.sizes[i].h; return 1; }
     return 0;
+}
+
+static B32 ui_picture_failed(String8 url) { return !ui_image_url_ok(url) || ui_image_has_failed(ui_image_key(url), UI_IMG_FIT); }
+
+// Goes up whenever ui_picture_size or ui_picture_failed may answer differently (to lay out again).
+static U32 ui_picture_changes(void) { return ui_img.changes; }
+
+// Whether ui_image_full failed to load url (so the caller can say so instead of "loading").
+static B32 ui_image_failed(String8 url)
+{
+    return ui_image_has_failed(ui_image_key(url), UI_IMG_FULL);
 }
 
 static void ui_image_request(UI_ImageSlot *victim, U32 index, U64 key, int kind, String8 url)

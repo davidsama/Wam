@@ -239,6 +239,22 @@ static void test_catalog(Arena *a)
     CHECK(str8_match(sp.shots, str8_lit("https://m/t/MSBT%205.2.9%20In%20Action.png|https://m/MSBT%205.2.9%20In%20Action.png https://m/t/b.gif|https://m/b.gif"), 0));
     CHECK(str8_match(shots_repair(a, str8_lit("https://m/t/MSBT 5.2.9 In Action.png|https://m/MSBT 5.2.9 In Action.png https://m/t/b.gif|https://m/b.gif")), sp.shots, 0));
     CHECK(str8_match(shots_repair(a, sp.shots), sp.shots, 0)); // whole lists stay as they are
+
+    // The catalog keeps an addon's first screenshots, its details all of them (within reason).
+    String8List many = { 0 };
+    str8_list_push(a, &many, str8_lit("{\"id\":1,\"screenshots\":["));
+    for (int i = 0; i < 40; i += 1) str8_list_push(a, &many, str8_pushf(a, "%s{\"thumbnailUrl\":\"https://m/%d.png\",\"url\":\"https://m/f%d.png\"}", i ? "," : "", i, i));
+    str8_list_push(a, &many, str8_lit("]}"));
+    JSON *mod = json_parse(a, str8_list_join(a, &many, str8(0, 0)));
+    for (int all = 0; all < 2; all += 1) {
+        SearchResult r = { 0 };
+        m.all_shots = all;
+        cf_search_result(&m, mod, &r);
+        U32 n = 1;
+        for (U64 i = 0; i < r.shots.size; i += 1) n += r.shots.str[i] == ' ';
+        CHECK(n == (U32)(all ? SHOTS_MAX : SHOTS_LISTED));
+    }
+    m.all_shots = 0;
 }
 
 static SearchResult *twin_put(Catalog *c, char *id, char *name, char *author, B32 available, U8 site_only)
@@ -560,6 +576,13 @@ static void test_rich(Arena *a)
     CHECK(span_of(d, "Bold")->flags == RICH_BOLD && text_is(span_of(d, "site")->link, "https://a.b") && text_is(span_of(d, "https://c.d")->link, "https://c.d"));
     CHECK(span_of(d, "[New] thing")->text.size && block_of(d, "x2")->number == 2);
     CHECK(block_of(d, "foo[1] = 2")->kind == RICH_PRE && block_of(d, "after")->kind == RICH_PARA && block_of(d, "q1")->quote == 1);
+
+    // Only the addon sites' own pictures load by themselves.
+    char *own[] = { "https://media.forgecdn.net/a.png", "https://forgecdn.net/a", "https://WWW.CurseForge.com/x", "https://cdn.wago.io/x", "https://www.tukui.org/a?b" };
+    char *others[] = { "https://i.imgur.com/a.png", "https://notforgecdn.net/a", "https://forgecdn.net.evil.com/a", "https://evil.com/forgecdn.net",
+                       "https://evil.com?forgecdn.net", "https://evil.com#.forgecdn.net", "https://x@forgecdn.net/a", "https://forgecdn.net@evil.com/a", "http://forgecdn.net/a", "https://forgecdn.net:8443/a", "" };
+    for (int i = 0; i < (int)ArrayCount(own); i += 1) CHECK(rich_addon_site(str8_cstring(own[i])));
+    for (int i = 0; i < (int)ArrayCount(others); i += 1) CHECK(!rich_addon_site(str8_cstring(others[i])));
 
     // Nothing points into the source, which is freed first (a download's buffer).
     String8 src = str8_copy(a, str8_lit("<p><a href=\"https://a.b/c\">d</a> <img src=\"https://e.f/g.png\" alt=\"h\"></p>"));

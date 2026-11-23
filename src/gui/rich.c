@@ -12,6 +12,7 @@ typedef struct RichRun { // a piece of one line, in one style
     String8 text;
     RichColor color;
     RichSpan *span;      // 0: a list marker
+    F32 pic_h;           // a picture drawn in the text: its height (else 0)
 } RichRun;
 
 typedef struct RichBox { Rect r; U32 kind; } RichBox;
@@ -26,6 +27,8 @@ typedef struct RichLayout {
     RichRun *runs; U64 run_count, run_cap;
     RichBox *boxes; U64 box_count, box_cap;
     F32 h;
+    B32 pics;            // it has pictures,
+    U32 pic_changes;     // laid out with what was known of them then (ui_picture_changes)
 } RichLayout;
 
 #define RICH_CHIP_PAD (6 * ui.scale)
@@ -67,7 +70,19 @@ static F_Font *rich_font(RichBlock *k, RichSpan *sp, B32 caption)
     return caption ? ui.font.caption : ui.font.normal;
 }
 
-typedef struct RichLine { RichLayout *l; RichBlock *k; F_Font *base; F32 x0, w, x, y; B32 caption; } RichLine;
+typedef struct RichLine { RichLayout *l; RichBlock *k; F_Font *base; F32 x0, w, x, y, h; B32 caption; } RichLine;
+
+static B32 rich_picture_inline(String8 url) { return rich_addon_site(url) && !ui_picture_failed(url); }
+
+// How big it's drawn: its size at most, inside max_w (a guess until it's loaded).
+static void rich_picture_size(String8 url, F32 max_w, F32 *w, F32 *h)
+{
+    F32 s = ui.scale, pw = 240 * s, ph = 135 * s;
+    U32 iw, ih;
+    if (ui_picture_size(url, &iw, &ih)) { pw = (F32)iw * s; ph = (F32)ih * s; }
+    F32 k = Min(1.0f, Min(max_w / pw, 480 * s / ph));
+    *w = Max(pw * k, 1); *h = Max(ph * k, 1);
+}
 
 // Part of a word at the pen (continuing the run before it, when it's the same text going on).
 static void rich_place(RichLine *c, RichSpan *sp, String8 text, F32 tw)
@@ -76,7 +91,7 @@ static void rich_place(RichLine *c, RichSpan *sp, String8 text, F32 tw)
     RichRun *prev = c->l->run_count ? &c->l->runs[c->l->run_count - 1] : 0;
     F32 y = c->y + c->base->ascent - f->ascent;
     U8 *end = prev ? prev->text.str + prev->text.size : 0;
-    if (prev && prev->span == sp && prev->y == y && (end == text.str || (end + 1 == text.str && *end == ' '))) {
+    if (prev && !prev->pic_h && prev->span == sp && prev->y == y && (end == text.str || (end + 1 == text.str && *end == ' '))) {
         prev->text.size = (U64)(text.str + text.size - prev->text.str);
         prev->w = c->x + tw - prev->x;
     } else {
@@ -91,7 +106,7 @@ static void rich_place(RichLine *c, RichSpan *sp, String8 text, F32 tw)
     c->x += tw;
 }
 
-static void rich_next_line(RichLine *c) { c->x = c->x0; c->y += c->base->line_height; }
+static void rich_next_line(RichLine *c) { c->x = c->x0; c->y += c->h; c->h = c->base->line_height; }
 
 // A word too long for a line, character by character.
 static void rich_place_split(RichLine *c, RichSpan *sp, String8 text)
@@ -116,9 +131,10 @@ static void rich_place_split(RichLine *c, RichSpan *sp, String8 text)
 // Lays out a block's spans at (x, y), w wide; returns their height.
 static F32 rich_layout_spans(RichLayout *l, RichBlock *k, F32 x, F32 y, F32 w, B32 caption)
 {
-    RichLine c = { l, k, 0, x, Max(w, 8 * ui.scale), x, y, caption };
+    RichLine c = { l, k, 0, x, Max(w, 8 * ui.scale), x, y, 0, caption };
     RichSpan plain = { 0 };
     c.base = rich_font(k, &plain, caption);
+    c.h = c.base->line_height;
     typedef struct Piece { RichSpan *sp; String8 text; F32 w; } Piece;
     Piece word[32];
     U32 n = 0;
@@ -131,6 +147,21 @@ static F32 rich_layout_spans(RichLayout *l, RichBlock *k, F32 x, F32 y, F32 w, B
             B32 chip = (sp->flags & RICH_IMAGE) != 0; // a picture's name: a chip of its own, in one piece
             if (chip) j = sp->text.size;
             while (j < sp->text.size && sp->text.str[j] != ' ' && sp->text.str[j] != '\n') j += 1;
+            if (chip) l->pics = 1;
+            if (chip && rich_picture_inline(sp->image)) {
+                F32 pw, ph;
+                rich_picture_size(sp->image, c.w, &pw, &ph);
+                if (c.x > c.x0 && c.x + space + pw > c.x0 + c.w) rich_next_line(&c);
+                else if (c.x > c.x0) c.x += space;
+                RichRun *r = rich_push_run(l);
+                r->x = c.x; r->y = c.y; r->w = pw; r->pic_h = ph;
+                r->font = f; r->span = sp;
+                c.x += pw + RICH_CHIP_GAP;
+                c.h = Max(c.h, ph + 4 * ui.scale);
+                space = 0;
+                any = 1;
+                break;
+            }
             if (j > i) {
                 any = 1;
                 String8 text = str8_substr(sp->text, i, j);
@@ -154,7 +185,7 @@ static F32 rich_layout_spans(RichLayout *l, RichBlock *k, F32 x, F32 y, F32 w, B
             i = j + 1;
         }
     }
-    return any ? c.y + c.base->line_height - y : 0;
+    return any ? c.y + c.h - y : 0;
 }
 
 static void rich_layout(RichLayout *l, Rich *doc, F32 w, B32 caption)
@@ -221,13 +252,14 @@ static RichLayout *rich_layout_get(Rich *doc, F32 w, B32 caption)
         if (c->used < oldest->used) oldest = c;
     }
     if (!l) l = oldest;
-    if (l->doc != doc->id || l->w != w || l->scale != ui.scale || l->caption != caption) {
+    if (l->doc != doc->id || l->w != w || l->scale != ui.scale || l->caption != caption || (l->pics && l->pic_changes != ui_picture_changes())) {
         if (!l->arena) l->arena = arena_alloc(GB(1));
         Arena *a = l->arena;
         arena_clear(a);
         *l = (RichLayout){ 0 };
         l->arena = a;
         l->doc = doc->id; l->w = w; l->scale = ui.scale; l->caption = caption;
+        l->pic_changes = ui_picture_changes();
         rich_layout(l, doc, w, caption);
     }
     l->used = ui.frame_index + 1;
@@ -235,7 +267,7 @@ static RichLayout *rich_layout_get(Rich *doc, F32 w, B32 caption)
 }
 
 // Draws the document at (x, y), w wide, only what's in [vis_y0, vis_y1); returns its height. caption: in the
-// caption font. A click on a link opens it in the browser, one on a picture's name sets *picture to its
+// caption font. A click on a link opens it in the browser, one on a picture (or its name) sets *picture to its
 // URL (when picture isn't 0, else that opens in the browser too).
 static F32 rich_draw(Rich *doc, F32 x, F32 y, F32 w, B32 caption, F32 vis_y0, F32 vis_y1, String8 *picture)
 {
@@ -255,14 +287,14 @@ static F32 rich_draw(Rich *doc, F32 x, F32 y, F32 w, B32 caption, F32 vis_y0, F3
     RichRun *hot = 0;
     for (U64 i = 0; i < l->run_count; i += 1) {
         RichRun *r = &l->runs[i];
-        F32 ry = y + r->y, rh = r->font->line_height;
+        F32 ry = y + r->y, rh = r->pic_h ? r->pic_h : r->font->line_height;
         if (!r->span || ry + rh < vis_y0 || ry > vis_y1 || !(r->span->link.size || r->span->image.size)) continue;
         Rect hit = rect(x + r->x, ry, x + r->x + r->w, ry + rh);
         if (!ui_mouse_in(hit) || !ui_mouse_in(ui.clip)) continue;
         hot = r;
         ui.cursor = UI_CURSOR_HAND;
         String8 url = r->span->link.size ? r->span->link : r->span->image;
-        ui_tooltip(hit, url.size > 90 ? str8_pushf(ui.frame_arena, "%.*s...", 87, url.str) : url); // where it goes, whatever its text says
+        if (!r->pic_h || r->span->link.size) ui_tooltip(hit, url.size > 90 ? str8_pushf(ui.frame_arena, "%.*s...", 87, url.str) : url); // where it goes, whatever its text says
         if (ui_clicked(hit)) {
             if (!r->span->link.size && picture) *picture = r->span->image;
             else os_open_url(url);
@@ -270,9 +302,15 @@ static F32 rich_draw(Rich *doc, F32 x, F32 y, F32 w, B32 caption, F32 vis_y0, F3
     }
     for (U64 i = 0; i < l->run_count; i += 1) {
         RichRun *r = &l->runs[i];
-        F32 rx = x + r->x, ry = y + r->y, rh = r->font->line_height;
+        F32 rx = x + r->x, ry = y + r->y, rh = r->pic_h ? r->pic_h : r->font->line_height;
         if (ry + rh < vis_y0 || ry > vis_y1) continue;
         RichSpan *sp = r->span;
+        if (r->pic_h) {
+            Rect pr = rect(rx, ry, rx + r->w, ry + rh);
+            if (!ui_picture(pr, sp->image, 16, 4 * s, 0)) r_rect(pr, C_BUTTON, 4 * s, 0, 0.5f);
+            if (hot == r && sp->link.size) r_rect(pr, C_BORDER_HI, 4 * s, ui_px(), 0.5f);
+            continue;
+        }
         B32 chip = sp && (sp->flags & RICH_IMAGE);
         F32 rw = chip ? r->w - RICH_CHIP_GAP : r->w, inset = chip ? RICH_CHIP_PAD : 0;
         if (chip) r_rect(rect(rx, ry - s, rx + rw, ry + rh + s), C_BUTTON, 5 * s, 0, 0.5f);

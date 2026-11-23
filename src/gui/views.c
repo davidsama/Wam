@@ -1037,6 +1037,7 @@ static void details_follow(void)
     if (str8_match(str8_cstring(app.sel_id), str8_cstring(app.detail_want), 0)) return;
     copy_cstr(app.detail_want, sizeof(app.detail_want), str8_cstring(app.sel_id));
     app.detail_scroll.pos = app.detail_scroll.target = 0;
+    app.gallery_index = app.gallery_first = 0;
     if (app.sel_id[0]) { wm_timer_start(details_timer, 120); details_due_ms = os_now_ms() + 120; }
 }
 
@@ -1160,6 +1161,75 @@ static F32 detail_link(F32 x, F32 y, F32 h, String8 label, String8 url)
     return x + w + 8 * ui.scale;
 }
 
+// The screenshots: one shown whole, and a filmstrip of them all to pick from under it. Returns the height.
+static F32 draw_gallery(Rect p, F32 x, F32 y, F32 w, Shot *shots, U32 n, B32 *animating)
+{
+    F32 s = ui.scale, gap = 6 * s;
+    if (app.gallery_index >= n) app.gallery_index = 0;
+    Rect stage = rect(x, y, x + w, (F32)(int)(y + Min(w * 9.0f / 16.0f, (p.y1 - p.y0) * 0.6f)));
+    B32 in_view = ui_mouse_in(ui.clip);
+    if (stage.y1 > p.y0 && stage.y0 < p.y1) {
+        Shot *shot = &shots[app.gallery_index];
+        F32 cx = (stage.x0 + stage.x1) * 0.5f, cy = (stage.y0 + stage.y1) * 0.5f;
+        r_rect(stage, ui_hex(0x000000, 0.30f), 8 * s, 0, 0.5f);
+        if (!ui_picture(stage, shot->full, 2 * s, 8 * s, 0)) {
+            if (ui_picture_failed(shot->full)) ui_text_centered(ui.font.caption, stage, str8_lit("Couldn't load this picture."), C_FAINT);
+            else *animating |= ui_spinner(cx, cy, 9 * s);
+        }
+        B32 hot = in_view && ui_mouse_in(stage), used = 0;
+        if (n > 1) {
+            // Arrows and "2 / 9", on dark plates: the picture under them may be light.
+            F32 b = 32 * s;
+            for (int k = 0; k < 2; k += 1) {
+                F32 bx = k ? stage.x1 - b - 8 * s : stage.x0 + 8 * s;
+                Rect r = rect(bx, cy - b * 0.5f, bx + b, cy + b * 0.5f);
+                if (!hot) continue;
+                r_rect(r, ui_hex(0x05070a, 0.72f), b * 0.5f, 0, 0.5f);
+                if (ui_glass_button(r, k ? str8_lit("\xE2\x80\xBA###gallery_next") : str8_lit("\xE2\x80\xB9###gallery_prev"), ui.font.title)) {
+                    app.gallery_index = (app.gallery_index + (k ? 1 : n - 1)) % n;
+                    wm_request_frame();
+                }
+                used |= ui_mouse_in(r) || point_in(r, ui.in.press_x, ui.in.press_y);
+            }
+            String8 count = str8_pushf(ui.frame_arena, "%u / %u", app.gallery_index + 1, n);
+            F32 cw = f_text_width(ui.font.caption, count) + 16 * s, ch = ui.font.caption->line_height + 4 * s;
+            Rect cr = rect(stage.x1 - cw - 8 * s, stage.y1 - ch - 8 * s, stage.x1 - 8 * s, stage.y1 - 8 * s);
+            r_rect(cr, ui_hex(0x05070a, 0.72f), ch * 0.5f, 0, 0.5f);
+            ui_text_centered(ui.font.caption, cr, count, ui_hex(0xffffff, 0.9f));
+        }
+        if (hot && !used) {
+            ui.cursor = UI_CURSOR_HAND;
+            if (ui_clicked(stage)) viewer_open(shots, n, app.gallery_index); // at full size, over the window
+        }
+    }
+    if (n < 2) return stage.y1 - y;
+
+    // The filmstrip: as many as fit, moving along to keep the shown one (and the next) in it.
+    U32 fit = (U32)Max((w + gap) / (72 * s + gap), 1);
+    F32 tw = (w - gap * (F32)(fit - 1)) / (F32)fit, th = (F32)(int)(tw * 9.0f / 16.0f), ty = stage.y1 + gap;
+    U32 first = n > fit ? Min(app.gallery_first, n - fit) : 0, margin = fit > 2 ? 1 : 0;
+    U32 i = app.gallery_index;
+    if (n > fit && !ui.in.down) { // (not under a press)
+        if (i < first + margin) first = i > margin ? i - margin : 0;
+        if (i + margin >= first + fit) first = Min(i + margin + 1 - fit, n - fit);
+    }
+    app.gallery_first = first;
+    if (ty + th > p.y0 && ty < p.y1) {
+        for (U32 k = 0; k < fit && first + k < n; k += 1) {
+            U32 at = first + k;
+            F32 tx = x + (F32)k * (tw + gap);
+            Rect r = rect((F32)(int)tx, ty, (F32)(int)(tx + tw), ty + th);
+            B32 hot = in_view && ui_mouse_in(r), cur = at == app.gallery_index;
+            if (!ui_image(r, shots[at].thumb, UI_IMG_THUMB, 5 * s, ui_hex(0xffffff, cur || hot ? 1.0f : 0.55f))) r_rect(r, C_BUTTON, 5 * s, 0, 0.5f);
+            if (cur) r_rect(r, C_ACCENT, 5 * s, 2 * ui_px(), 0.5f);
+            else if (hot) r_rect(r, C_BORDER_HI, 5 * s, ui_px(), 0.5f);
+            if (hot) ui.cursor = UI_CURSOR_HAND;
+            if (hot && ui_clicked(r)) { app.gallery_index = at; wm_request_frame(); }
+        }
+    }
+    return ty + th - y;
+}
+
 static B32 draw_detail(Rect p, SearchResult *e)
 {
     F32 s = ui.scale;
@@ -1273,22 +1343,9 @@ static B32 draw_detail(Rect p, SearchResult *e)
 
     // Summary, screenshots, description, changelog.
     if (e->summary.size) y += ui_text_wrapped(ui.font.normal, x, y, w, e->summary, C_DIM, p.y0, p.y1) + 14 * s;
-    Shot shots[6];
-    U32 nshots = parse_shots(d && d->shots.size ? d->shots : e->shots, shots, 6);
-    if (nshots) {
-        F32 gap = 10 * s, tw = (w - gap) * 0.5f, th = tw * 9.0f / 16.0f;
-        for (U32 i = 0; i < nshots; i += 1) {
-            F32 sx = x + (F32)(i % 2) * (tw + gap), sy = y + (F32)(i / 2) * (th + gap);
-            Rect sr = rect(sx, sy, sx + tw, sy + th);
-            if (sr.y1 > p.y0 && sr.y0 < p.y1) {
-                B32 hot = ui_mouse_in(sr);
-                if (!ui_image(sr, shots[i].thumb, UI_IMG_THUMB, 8 * s, ui_hex(0xffffff, hot ? 0.85f : 1.0f))) r_rect(sr, C_BUTTON, 8 * s, 0, 0.5f);
-                if (hot) r_rect(sr, C_BORDER_HI, 8 * s, ui_px(), 0.5f);
-                if (ui_clicked(sr)) viewer_open(shots, nshots, i); // the full picture, in wam
-            }
-        }
-        y += (F32)((nshots + 1) / 2) * (th + gap) + 8 * s;
-    }
+    Shot shots[SHOTS_MAX];
+    U32 nshots = parse_shots(d && d->shots.size ? d->shots : e->shots, shots, SHOTS_MAX);
+    if (nshots) y += draw_gallery(p, x, y, w, shots, nshots, &animating) + 14 * s;
     if (loading) {
         F32 cr = 7 * s;
         animating |= ui_spinner(x + cr, y + ui.font.caption->line_height * 0.5f, cr);

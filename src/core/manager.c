@@ -54,6 +54,7 @@ typedef struct Mgr {
     KnownHashes unpacked;      // the files the last zip install unpacked, hashed from memory (mgr_record_checks)
     RemoteFile manual[16];     // files that failed because only CurseForge's own page may serve them (manual_url set)
     U32 manual_count;
+    B32 all_shots;             // collect every screenshot (an addon's details), not just the first few (the catalog)
 } Mgr;
 
 typedef struct SearchResult {
@@ -1841,6 +1842,10 @@ static B32 mgr_sync(Mgr *m, AddonArray *scan)
 
 //- Search and browse (Tukui, Wago when the user has a key, CurseForge)
 
+#define SHOTS_LISTED 6   // in the catalog
+#define SHOTS_MAX    30  // in an addon's details
+static U32 shots_cap(Mgr *m) { return m->all_shots ? SHOTS_MAX : SHOTS_LISTED; }
+
 // Adds one screenshot ("thumb|full", or just "thumb") to a shots list, its links made safe for it.
 static void shots_push(Arena *a, String8List *l, String8 thumb, String8 full)
 {
@@ -1869,7 +1874,7 @@ static void cf_search_result(Mgr *m, JSON *mod, SearchResult *sr)
     String8List shots = { 0 };
     json_each(sh, json_get(mod, "screenshots")) {
         String8 th = json_str(json_get(sh, "thumbnailUrl")), full = json_str(json_get(sh, "url"));
-        if (th.size && shots.count < 6) shots_push(m->arena, &shots, th, full);
+        if (th.size && shots.count < shots_cap(m)) shots_push(m->arena, &shots, th, full);
     }
     sr->shots = shots_join(m->arena, &shots);
 }
@@ -1891,9 +1896,9 @@ static void tukui_search_result(Mgr *m, JSON *item, SearchResult *sr)
     String8 first = json_str(json_get(item, "screenshot_url"));
     if (first.size) shots_push(m->arena, &shots, first, str8(0, 0));
     JSON *gal = json_get(item, "gallery_url");
-    json_each(g, gal) if (shots.count < 6 && str8_starts_with(json_str(g), str8_lit("https://"), 1)) shots_push(m->arena, &shots, json_str(g), str8(0, 0));
+    json_each(g, gal) if (shots.count < shots_cap(m) && str8_starts_with(json_str(g), str8_lit("https://"), 1)) shots_push(m->arena, &shots, json_str(g), str8(0, 0));
     String8 gallery = json_str(gal); // older responses: the list written as one string
-    for (U64 i = 0; i < gallery.size && shots.count < 6;) {
+    for (U64 i = 0; i < gallery.size && shots.count < shots_cap(m);) {
         U64 at = str8_find(gallery, i, str8_lit("https://"), 0);
         if (at >= gallery.size) break;
         U64 end = at;
@@ -1920,7 +1925,7 @@ static void wowi_search_result(Mgr *m, JSON *item, SearchResult *sr)
     if (thumbs->first) sr->icon = url_escape_unsafe(m->arena, json_str(thumbs->first));
     // WoWInterface's thumbnails are tiny: its full pictures make the screenshot thumbnails.
     String8List shots = { 0 };
-    json_each(img, json_get(item, "UIIMGs")) if (shots.count < 6 && json_str(img).size) shots_push(m->arena, &shots, json_str(img), str8(0, 0));
+    json_each(img, json_get(item, "UIIMGs")) if (shots.count < shots_cap(m) && json_str(img).size) shots_push(m->arena, &shots, json_str(img), str8(0, 0));
     sr->shots = shots_join(m->arena, &shots);
 }
 
