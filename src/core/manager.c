@@ -1782,18 +1782,14 @@ static B32 mgr_sync(Mgr *m, AddonArray *scan)
     }
     if (!mgr_save(m)) return 0;
 
-    U64 updates = 0, untracked = 0, pinned = 0;
-    for (U64 i = 0; i < m->count; i += 1) {
-        B32 u = mgr_has_update(&m->addons[i]);
-        if (u && m->addons[i].pinned) pinned += 1;
-        else updates += u;
-    }
+    U64 untracked = 0;
     for (U64 i = 0; i < scan->count; i += 1) untracked += !mgr_owner_of(m, scan->v[i].folder);
     if (!ok) { m->error = first_error; return 0; }
-    mgr_status(m, "%llu tracked, %llu newly recognized, %llu update%s available%s%s",
-               m->count, adopted, updates, updates == 1 ? "" : "s",
-               pinned ? (char *)str8_pushf(m->arena, " (and %llu for pinned addons)", pinned).str : "",
-               untracked && !m->api_key.size && !m->wago_key.size ? " (recognizing more needs a CurseForge or Wago key)" : "");
+    // Only what's new: the counts are on screen already. Nothing to say clears "Checking...".
+    String8List say = { 0 };
+    if (adopted) str8_list_push(m->arena, &say, str8_pushf(m->arena, "Recognized %llu more addon%s", adopted, adopted == 1 ? "" : "s"));
+    if (untracked && !m->api_key.size && !m->wago_key.size) str8_list_push(m->arena, &say, str8_lit("Recognizing more addons needs a CurseForge or Wago key"));
+    mgr_status(m, "%.*s", S8F(str8_list_join(m->arena, &say, str8_lit(". "))));
     return 1;
 }
 

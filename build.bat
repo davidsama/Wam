@@ -29,7 +29,7 @@ if "%1"=="test" (
 
 rem DirectWrite's headers are C++ only: that one file is C++, compiled on its own (no exceptions, no RTTI).
 cl /nologo /W4 /Zi %MODE% /EHs-c- /GR- /c ..\src\font\font_dwrite.cpp /Fo:font_dwrite.obj || goto fail
-rem The icon, the header's logo (res\wam.rc; tools\make_icon.c draws them) and the version (src\version.h).
+rem The icon (res\wam.rc; tools\make_icon.c draws it) and the version (src\version.h).
 rc /nologo /i ..\src /fo wam.res ..\res\wam.rc || goto fail
 cl %COMMON% %MODE% ..\src\main_gui.c /Fe:wam.exe /Iwebview2 /link %LINK% /SUBSYSTEM:WINDOWS user32.lib gdi32.lib shell32.lib dwmapi.lib d3d11.lib dxgi.lib dxguid.lib d3dcompiler.lib dwrite.lib winhttp.lib version.lib ole32.lib crypt32.lib advapi32.lib uuid.lib shlwapi.lib windowscodecs.lib webview2\WebView2LoaderStatic.lib font_dwrite.obj wam.res || goto fail
 

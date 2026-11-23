@@ -1,5 +1,20 @@
 # Changes
 
+## 1.3.0
+
+- **Themes**: pick one of ten in Settings. Eight are new and drawn from WoW's magic and melee: Void,
+  Frostbound, Inferno, Fel, Bloodrage, Radiance, Wildgrowth and Stormcaller, each with its own
+  colors, emblem, corner pieces and spinner. Tinker is still the default, and Slate is plain.
+- **A calmer window**: an addon's row has its name, what it does, and one faint line of facts ending
+  in its sources (links to their pages). Tabs are plain text with a line under the active one, and
+  buttons are flat with a thin rim.
+- **Simpler filters**: Get addons has three menus, Sort, Category and Sources, instead of a row of
+  buttons.
+- **A status line in plain language**: how many addons are installed, how many updates are ready and
+  when wam last checked. Frame and startup times are off unless you turn them on in Settings.
+- **A new name and icon**: a drawn wordmark next to the theme's emblem, and a matching app icon.
+- **Keyboard**: Tab and Shift+Tab move between buttons, tabs and checkboxes, and Enter or Space clicks.
+
 ## 1.2.0
 
 - **wam is open source** now, under the GPL-3.0 license: see the README for building it yourself.

@@ -378,10 +378,12 @@ static void run_task(Task *t)
     AddonArray scan = addons_scan(a, addons_dir);
     F64 scan_ms = (F64)(os_now_us() - t0) / 1000.0;
     if (mgr_prune(m) && t->kind != TASK_REFRESH) mgr_save(m); // listings only read (they run beside other tasks)
-    if (t->kind == TASK_SYNC && !mgr_sync(m, &scan)) worker_set_status(m->error, 1);
+    B32 checked = t->kind == TASK_SYNC && mgr_sync(m, &scan);
+    if (t->kind == TASK_SYNC && !checked) worker_set_status(m->error, 1);
 
     Snapshot *snap = build_snapshot(a, m, &scan, t->flavor, scan_ms);
     snap->gen = t->gen;
+    snap->checked = checked ? (U64)cat_now() : 0;
     snap->seq = t->seq ? t->seq : os_atomic_inc(&snap_seq); // listings took theirs before reading
     wm_post(on_snapshot, 0, snap);
 }

@@ -308,14 +308,12 @@ static void ui_fonts_load(void)
 
 static void ui_plate(Rect r, V4 bg, F32 radius)
 {
-    F32 o = ui.theme.ornate, px = ui_px();
-    if (o <= 0) { r_rect(r, bg, radius, 0, 0.5f); return; }
-    V4 white = ui_hex(0xffffff, bg.w), black = ui_hex(0x000000, bg.w);
-    r_rect_gradient(r, ui_mix(bg, white, 0.10f * o), ui_mix(bg, black, 0.22f * o), radius, 0, 0.5f, 0);
-    // A rim tinted towards the trim's metal, and light catching the top edge.
-    r_rect(r, ui_mix(ui_mix(bg, black, 0.45f), ui.theme.trim, 0.30f * o), radius, px, 0.5f);
-    Rect in = rect(r.x0 + px, r.y0 + px, r.x1 - px, r.y1 - px);
-    r_rect_gradient(in, ui_hex(0xffffff, 0.16f * o), ui_hex(0xffffff, 0), Max(radius - px, 0), px, 0.5f, 0);
+    F32 o = ui.theme.ornate;
+    r_rect(r, bg, radius, 0, 0.5f);
+    if (o <= 0) return;
+    V4 rim = ui_mix(bg, ui.theme.trim, 0.45f * o); // a thin rim, tinted towards the trim's metal
+    rim.w = bg.w;
+    r_rect(r, rim, radius, ui_px(), 0.5f);
 }
 
 // Color helpers for the ornaments: toward white, toward black, more transparent.
@@ -1157,6 +1155,15 @@ static B32 ui_glass_button(Rect r, String8 label, F_Font *f)
     return sg.clicked;
 }
 
+// The line under a tab's label (inset from r's sides): the active tab's, or half lit on hover.
+static void ui_tab_line(Rect r, F32 inset, B32 active, F32 hover)
+{
+    F32 s = ui.scale, h = Max(ui_px(), 2 * s);
+    V4 c = active ? ui.theme.accent_hi : ui.theme.border_hi;
+    if (!active) c.w *= hover;
+    if (c.w > 0) r_rect(rect(r.x0 + inset, r.y1 - h, r.x1 - inset, r.y1), c, h * 0.5f, 0, 0.5f);
+}
+
 static F32 ui_tab_badge_width(String8 badge) { return badge.size ? f_text_width(ui.font.caption, badge) + 14 * ui.scale : 0; }
 
 static F32 ui_tab_width(String8 label, String8 badge)
@@ -1171,8 +1178,7 @@ static B32 ui_tab(Rect r, String8 label, String8 badge, B32 active)
     UI_Signal sg = ui_signal(id, r, UI_FOCUSABLE);
     F32 t = ui_anim(id, (F32)sg.hovering);
     label = ui_label_text(label);
-    if (active) ui_plate(r, ui.theme.button_hi, 6 * s);
-    else if (t > 0) { V4 c = ui.theme.hover; c.w *= t; r_rect(r, c, 6 * s, 0, 0.5f); }
+    ui_tab_line(r, 14 * s, active, t);
     V4 fg = active ? ui.theme.text : ui_mix(ui.theme.dim, ui.theme.text, t);
     if (badge.size) {
         F32 lx = r.x0 + 14 * s;
@@ -1186,17 +1192,16 @@ static B32 ui_tab(Rect r, String8 label, String8 badge, B32 active)
     return sg.clicked;
 }
 
-static F32 ui_pill_tab_width(String8 label) { return f_text_width(ui.font.normal, ui_label_text(label)) + 26 * ui.scale; }
+static F32 ui_title_tab_width(String8 label) { return f_text_width(ui.font.normal, ui_label_text(label)) + 26 * ui.scale; }
 
-static B32 ui_pill_tab(Rect r, String8 label, B32 active)
+static B32 ui_title_tab(Rect r, String8 label, B32 active)
 {
     UI_Id id = ui_id(label);
     UI_Signal sg = ui_signal(id, r, UI_FOCUSABLE);
-    F32 t = ui_anim(id, (F32)sg.hovering), radius = (r.y1 - r.y0) * 0.5f;
-    label = ui_label_text(label);
-    if (active) { ui_plate(r, ui.theme.accent_bg, radius); ui_text_centered(ui.font.normal, r, label, ui.theme.text); }
-    else { V4 bg = ui.theme.hover; bg.w *= t; ui_pill(r, label, ui.font.normal, ui_mix(ui.theme.dim, ui.theme.text, t), bg); }
-    ui_focus_ring(id, r, radius);
+    F32 t = ui_anim(id, (F32)sg.hovering);
+    ui_tab_line(r, 13 * ui.scale, active, t);
+    ui_text_centered(ui.font.normal, r, ui_label_text(label), active ? ui.theme.text : ui_mix(ui.theme.dim, ui.theme.text, t));
+    ui_focus_ring(id, r, 6 * ui.scale);
     return !active && sg.clicked;
 }
 

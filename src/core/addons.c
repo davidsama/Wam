@@ -52,8 +52,9 @@ static String8 wam_settings_path(Arena *a)
 //   window       the GUI window's last restored rectangle in screen pixels {x, y, width, height}
 //                and whether it was maximized
 //   theme        the GUI's look (a key of gui/themes.c), absent = the default
+//   showPerformance  the GUI's status line also shows frame and startup times
 typedef struct WamWindow { S32 x, y, w, h; B32 maximized; } WamWindow; // w = 0: none saved
-typedef struct WamSettings { String8 wow_root; F64 detail_share; WamWindow window; String8 theme; } WamSettings;
+typedef struct WamSettings { String8 wow_root; F64 detail_share; WamWindow window; String8 theme; B32 show_perf; } WamSettings;
 
 static WamSettings wam_settings_load(Arena *a)
 {
@@ -63,6 +64,7 @@ static WamSettings wam_settings_load(Arena *a)
     JSON *j = json_parse(a, os_read_file(a, path));
     st.wow_root = str8_copy(a, json_str(json_get(j, "wowRoot")));
     st.theme = str8_copy(a, json_str(json_get(j, "theme")));
+    st.show_perf = json_bool(json_get(j, "showPerformance"), 0);
     JSON *w = json_get(j, "detailShare");
     if (w->type == JSON_NUM && w->num > 0 && w->num < 1) st.detail_share = w->num;
     JSON *win = json_get(j, "window");
@@ -87,6 +89,7 @@ static B32 wam_settings_save(WamSettings *st)
                                                win->x, win->y, win->w, win->h, win->maximized ? "true" : "false"));
     }
     if (st->theme.size) str8_list_push(t.arena, &l, str8_pushf(t.arena, "  \"theme\": \"%.*s\"", S8F(json_escape(t.arena, st->theme))));
+    if (st->show_perf) str8_list_push(t.arena, &l, str8_lit("  \"showPerformance\": true"));
     String8 body = str8_pushf(t.arena, "{\n%.*s\n}\n", S8F(str8_list_join(t.arena, &l, str8_lit(",\n"))));
     B32 ok = path.size && os_make_dirs(path_dirname(path)) && os_write_file(path, body);
     scratch_end(t);
@@ -130,6 +133,16 @@ static B32 wam_save_theme(String8 theme)
     Temp t = scratch_begin(0);
     WamSettings st = wam_settings_load(t.arena);
     st.theme = theme;
+    B32 ok = wam_settings_save(&st);
+    scratch_end(t);
+    return ok;
+}
+
+static B32 wam_save_show_perf(B32 show)
+{
+    Temp t = scratch_begin(0);
+    WamSettings st = wam_settings_load(t.arena);
+    st.show_perf = show;
     B32 ok = wam_settings_save(&st);
     scratch_end(t);
     return ok;

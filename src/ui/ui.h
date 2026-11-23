@@ -182,7 +182,7 @@ static F32  ui_anim(UI_Id id, F32 target);
 // Drawing pieces that follow the theme's trim and `ornate` level, so a view gets the theme's look
 // by using them instead of plain rects. With ornate 0 they fall back to flat fills and lines.
 
-// A raised plate in bg: what ui_button draws. Gradient, rim and a lit top edge when ornate.
+// A plate in bg: what ui_button draws. Flat, with a thin metal rim when ornate.
 static void ui_plate(Rect r, V4 bg, F32 radius);
 // A panel in two passes: ui_panel fills it (before its content), ui_panel_rim draws the metal rim
 // and corner studs over the content's edges (after it).
@@ -265,13 +265,13 @@ static F32  ui_small_button_width(String8 label);
 // A translucent white pill or circle (fully rounded) with a label or symbol, for use over a dark
 // backdrop such as a picture viewer; true when clicked.
 static B32  ui_glass_button(Rect r, String8 label, F_Font *f);
-// A tab: plate when active, a hover fill otherwise, with an optional badge after the label (a count
+// A tab: text with a line under it when active (a fainter one on hover), with an optional badge after the label (a count
 // on the theme's ok color). True when clicked.
 static B32  ui_tab(Rect r, String8 label, String8 badge, B32 active);
 static F32  ui_tab_width(String8 label, String8 badge);
-// A fully rounded tab (e.g. in a title bar): accent plate when active. True when an inactive one is clicked.
-static B32  ui_pill_tab(Rect r, String8 label, B32 active);
-static F32  ui_pill_tab_width(String8 label);
+// The same for a title bar, without a badge. True when an inactive one is clicked.
+static B32  ui_title_tab(Rect r, String8 label, B32 active);
+static F32  ui_title_tab_width(String8 label);
 // Text that's a link: underlined, with a hand pointer, while hovered (inside ui.clip). Draws it at
 // (x, y), at most max_w wide; returns the x after it. *hit gets the area that takes the click (a
 // little bigger than the text): check ui_clicked(*hit).

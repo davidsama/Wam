@@ -1,5 +1,5 @@
-// make_icon.c - draws wam's icon (a gold cog with a hammer across it) and writes res\wam.ico and
-// res\logo.png. The shapes are signed distance functions on a 256x256 canvas, sampled 8x8 times per
+// make_icon.c - draws wam's icon (a gold W with a gem over its middle) and writes res\wam.ico and
+// screenshots\logo.png (the README's). The shapes are signed distance functions on a 256x256 canvas, sampled 8x8 times per
 // pixel, so every size is drawn from the shapes rather than scaled down from a bigger picture.
 //
 // Build and run from the repository root (in a Visual Studio developer prompt):
@@ -83,39 +83,32 @@ static Shape *box(float x0, float y0, float x1, float y1, float radius, Color to
     return s;
 }
 
+static Shape *poly(float *xy, int n, Color top, Color bottom, Color stroke, float sw)
+{
+    Shape *s = add(SHAPE_POLY, top, bottom, stroke, sw);
+    for (int i = 0; i < n; i += 1) { s->px[i] = xy[i * 2]; s->py[i] = xy[i * 2 + 1]; }
+    s->n = n;
+    return s;
+}
+
+// The W of the header's wordmark (src/gui/wordmark.c), in Tinker's gold on midnight blue, with the
+// gem set over its middle.
 static void build_icon(void)
 {
-    Color gold = hex(0xf2c35a, 1), gold_dark = hex(0xc0862a, 1), bronze = hex(0x5a3810, 1), gold_light = hex(0xffe7a3, 1);
-    Color blue_top = hex(0x24407a, 1), blue_bottom = hex(0x0f1a33, 1);
-    Color steel_top = hex(0xe4eaf2, 1), steel_bottom = hex(0x8d99a8, 1), wood_top = hex(0x9a6232, 1), wood_bottom = hex(0x5e3818, 1);
-    Color ink = hex(0x1e1006, 1), none = { 0 };
+    Color none = { 0 };
     shape_count = 0;
+    box(10, 10, 246, 246, 52, hex(0x22345c, 1), hex(0x0b1120, 1), hex(0xc08a34, 1), 11, 0);
 
-    // The cog: 12 trapezoid teeth around a gold ring.
-    Shape *cog = add(SHAPE_POLY, gold, gold_dark, bronze, 7);
-    int teeth = 12;
-    float ro = 121, ri = 99;
-    for (int i = 0; i < teeth; i += 1) {
-        float a = i * 6.2831853f / teeth, w = 3.14159265f / teeth;
-        float r4[4] = { ri, ro, ro, ri }, a4[4] = { a - w * 0.62f, a - w * 0.36f, a + w * 0.36f, a + w * 0.62f };
-        for (int k = 0; k < 4; k += 1) {
-            cog->px[cog->n] = 128 + r4[k] * cosf(a4[k] - 1.5707963f);
-            cog->py[cog->n] = 128 + r4[k] * sinf(a4[k] - 1.5707963f);
-            cog->n += 1;
-        }
-    }
-    // The blue face, with a light inner ring.
-    Shape *face = add(SHAPE_CIRCLE, blue_top, blue_bottom, bronze, 6);
-    face->x0 = face->y0 = 128; face->radius = 74;
-    Shape *ring = add(SHAPE_CIRCLE, none, none, mix(gold_light, blue_top, 0.25f), 3);
-    ring->x0 = ring->y0 = 128; ring->radius = 64;
+    float w[] = { 36,66, 72,66, 93,150, 114,114, 142,114, 163,150, 184,66, 220,66, 180,206, 153,206, 128,163, 103,206, 76,206 };
+    poly(w, 13, hex(0xffeab4, 1), hex(0xb9802a, 1), none, 0);
 
-    // The hammer, tilted: handle, its gold grip band, the steel head and its gold collar.
-    float tilt = -38;
-    box(117, 68, 139, 232, 6, wood_top, wood_bottom, ink, 6, tilt);
-    box(117, 194, 139, 210, 0, gold, gold_dark, ink, 5, tilt);
-    box(70, 32, 186, 82, 8, steel_top, steel_bottom, ink, 6, tilt);
-    box(112, 32, 144, 82, 0, gold, gold_dark, ink, 5, tilt);
+    // The gem: its setting, the stone, and the lit facet on its upper left.
+    float setting[] = { 128,34, 161,73, 128,112, 95,73 };
+    poly(setting, 4, hex(0x10385f, 1), hex(0x10385f, 1), none, 0);
+    float stone[] = { 128,42, 154,73, 128,104, 102,73 };
+    poly(stone, 4, hex(0x8fd2ff, 1), hex(0x2f86cf, 1), none, 0);
+    float lit[] = { 128,42, 128,73, 102,73 };
+    poly(lit, 3, hex(0xd2efff, 1), hex(0xa8dcff, 1), none, 0);
 }
 
 // The color at canvas point (x, y): the shapes painted in order.
@@ -229,7 +222,7 @@ int main(int argc, char **argv)
             snprintf(path, sizeof(path), "%s\\icon-%d.png", argv[1], sizes[i]);
             write_file(path, png[i], png_bytes[i]);
         }
-        if (sizes[i] == 128) write_file("res\\logo.png", png[i], png_bytes[i]); // drawn in the window's header
+        if (sizes[i] == 128) write_file("screenshots\\logo.png", png[i], png_bytes[i]); // in the README
         free(px);
     }
     DWORD total = 6 + 16 * n;
@@ -247,6 +240,6 @@ int main(int argc, char **argv)
         offset += png_bytes[i];
     }
     if (!write_file("res\\wam.ico", ico, total)) return 1;
-    printf("res\\wam.ico (%d sizes, %lu bytes), res\\logo.png\n", n, total);
+    printf("res\\wam.ico (%d sizes, %lu bytes), screenshots\\logo.png\n", n, total);
     return 0;
 }

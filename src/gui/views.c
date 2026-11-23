@@ -875,64 +875,118 @@ static void show_category_menu(void)
     }
 }
 
-// Sort buttons, the category menu, source chips, the count and "Hide installed", in one row.
+static void browse_set_sort(BrowseSort sort)
+{
+    B32 searching = browse_query().size > 0;
+    if (searching) app.sort_query = sort; else app.sort_browse = sort;
+    app.scroll[VIEW_SEARCH].pos = app.scroll[VIEW_SEARCH].target = 0;
+    app.sel_id[0] = app.sel_restore[0] = 0;
+    if (searching) { app.sugg_last_query[0] = 0; suggest_due_ms = os_now_ms(); wm_timer_start(suggest_timer, 1); } // results for this sort too
+    wm_request_frame();
+}
+
+// "Best match" is only a sort while there's a query to match.
+static void show_sort_menu(void)
+{
+    String8 items[SORT_COUNT];
+    int first = browse_query().size ? 0 : 1;
+    U32 n = 0;
+    for (int k = first; k < SORT_COUNT; k += 1) items[n++] = str8_cstring(sort_names[k]);
+    S32 pick = wm_popup_menu(app.sort_btn, items, n, (S32)browse_sort() - first);
+    if (pick >= 0) browse_set_sort((BrowseSort)(pick + first));
+}
+
+static const int filter_sources[] = { SRC_CURSEFORGE, SRC_WOWI, SRC_WAGO, SRC_TUKUI };
+
+// Each source, checked while it's shown: picking one turns it on or off.
+static void show_sources_menu(void)
+{
+    WM_MenuItem items[2 + ArrayCount(filter_sources)];
+    int src_of[ArrayCount(items)];
+    U32 n = 0;
+    items[n] = (WM_MenuItem){ str8_lit("All sources"), -1, 0 }; src_of[n++] = -1;
+    items[n] = (WM_MenuItem){ str8_lit("-"), -1, 0 }; src_of[n++] = -1;
+    for (U32 k = 0; k < ArrayCount(filter_sources); k += 1) {
+        int src = filter_sources[k];
+        if (!app.src_count[src]) continue;
+        items[n] = (WM_MenuItem){ str8_cstring(source_names[src]), -1, !(app.src_hidden & (1u << src)) };
+        src_of[n++] = src;
+    }
+    S32 pick = wm_popup_menu_tree(app.src_btn, items, n);
+    if (pick < 0) return;
+    if (src_of[pick] < 0) app.src_hidden = 0;
+    else app.src_hidden ^= 1u << src_of[pick];
+    app.scroll[VIEW_SEARCH].pos = app.scroll[VIEW_SEARCH].target = 0;
+    wm_request_frame();
+}
+
+// What the Sources filter says: all of them, the one or two shown, or how many.
+static String8 sources_label(Arena *a)
+{
+    String8List shown = { 0 };
+    U32 have = 0;
+    for (U32 k = 0; k < ArrayCount(filter_sources); k += 1) {
+        int src = filter_sources[k];
+        if (!app.src_count[src]) continue;
+        have += 1;
+        if (!(app.src_hidden & (1u << src))) str8_list_push(a, &shown, str8_cstring(source_names[src]));
+    }
+    if (shown.count == have) return str8_lit("All");
+    if (!shown.count) return str8_lit("None");
+    if (shown.count <= 2) return str8_list_join(a, &shown, str8_lit(", "));
+    return str8_pushf(a, "%u of %u", (U32)shown.count, have);
+}
+
+// A filter: its name, faint, then what it's set to (at most value_max wide) and an arrow. `on`: it
+// narrows the list, so it's drawn brighter. *x moves past it. True when clicked; *out is where it is.
+static B32 draw_filter(F32 *x, F32 y, F32 h, String8 name, String8 value, F32 value_max, B32 on, Rect *out)
+{
+    F32 s = ui.scale, pad = 8 * s, gap = 6 * s;
+    F_Font *f = ui.font.caption;
+    String8 arrow = str8_lit("\xE2\x96\xBE");
+    F32 nw = f_text_width(f, name), vw = Min(f_text_width(f, value), Max(value_max, 0)), aw = f_text_width(f, arrow);
+    Rect b = rect(*x, y, *x + pad + nw + gap + vw + gap + aw + pad, y + h);
+    UI_Id id = ui_id(name);
+    UI_Signal sg = ui_signal(id, b, UI_FOCUSABLE);
+    F32 t = ui_anim(id, (F32)sg.hovering), ty = (b.y0 + b.y1 - f->line_height) * 0.5f;
+    if (t > 0) { V4 c = C_HOVER; c.w *= t; r_rect(b, c, 6 * s, 0, 0.5f); }
+    F32 tx = b.x0 + pad;
+    f_draw_text(f, tx, ty, name, C_DIM, 0);
+    tx += nw + gap;
+    f_draw_text(f, tx, ty, value, on ? C_ACCENT_HI : C_TEXT, vw + 1);
+    f_draw_text(f, tx + vw + gap, ty, arrow, ui_mix(C_DIM, C_TEXT, t), 0);
+    ui_focus_ring(id, b, 6 * s);
+    *x = b.x1 + 6 * s;
+    *out = b;
+    return sg.clicked;
+}
+
+// Sort, Category and Sources (menus), the count and "Hide installed", in one row.
 static F32 draw_browse_filters(Rect r)
 {
     F32 s = ui.scale;
     Arena *fa = ui.frame_arena;
     F32 h = 26 * s, y = r.y0 + (r.y1 - r.y0 - h) * 0.5f, x = r.x0;
-    B32 searching = browse_query().size > 0;
-    BrowseSort cur = browse_sort();
-    for (int k = searching ? 0 : 1; k < SORT_COUNT; k += 1) {
-        String8 label = str8_cstring(sort_names[k]);
-        F32 w = f_text_width(ui.font.caption, label) + 20 * s;
-        Rect b = rect(x, y, x + w, y + h);
-        B32 on = k == (int)cur, hot = ui_mouse_in(b);
-        r_rect(b, on ? C_ACCENT_BG : hot ? C_BUTTON_HI : C_BUTTON, h * 0.5f, 0, 0.5f);
-        ui_text_centered(ui.font.caption, b, label, on ? C_TEXT : C_DIM);
-        if (ui_clicked(b)) {
-            if (searching) app.sort_query = (BrowseSort)k; else app.sort_browse = (BrowseSort)k;
-            app.scroll[VIEW_SEARCH].pos = app.scroll[VIEW_SEARCH].target = 0;
-            app.sel_id[0] = app.sel_restore[0] = 0;
-            if (searching) { app.sugg_last_query[0] = 0; suggest_due_ms = os_now_ms(); wm_timer_start(suggest_timer, 1); } // results for this sort too
-        }
-        x += w + 6 * s;
-    }
-    // Category: a menu (see show_category_menu).
-    {
-        String8 label = app.subcategory >= 0 ? str8_pushf(fa, "%s \xE2\x80\xBA %s  \xE2\x96\xBE", cat_categories[app.category].name, cat_subcategories[app.subcategory].name)
-                      : app.category >= 0 ? str8_pushf(fa, "%s  \xE2\x96\xBE", cat_categories[app.category].name) : str8_lit("All categories  \xE2\x96\xBE");
-        F32 w = f_text_width(ui.font.caption, label) + 22 * s;
-        Rect b = rect(x + 6 * s, y, x + 6 * s + w, y + h);
-        B32 on = app.category >= 0, hot = ui_mouse_in(b);
-        r_rect(b, on ? C_ACCENT_BG : hot ? C_BUTTON_HI : C_BUTTON, h * 0.5f, 0, 0.5f);
-        ui_text_centered(ui.font.caption, b, label, on ? C_TEXT : C_DIM);
-        if (ui_clicked(b)) { app.cat_btn = b; wm_defer(show_category_menu); }
-        x = b.x1;
-    }
-    x += 12 * s;
-    static const int chips[] = { SRC_CURSEFORGE, SRC_WOWI, SRC_WAGO, SRC_TUKUI };
-    for (U32 k = 0; k < ArrayCount(chips); k += 1) {
-        int src = chips[k];
-        if (!app.src_count[src]) continue;
-        String8 label = str8_cstring(source_names[src]);
-        F32 w = f_text_width(ui.font.caption, label) + 18 * s;
-        if (x + w > r.x1 - 140 * s) break; // narrow window: leave room for "Hide installed"
-        Rect b = rect(x, y + 2 * s, x + w, y + h - 2 * s);
-        B32 shown = !(app.src_hidden & (1u << src));
-        draw_source_pill(b, src, shown, ui_mouse_in(b));
-        if (ui_clicked(b)) { app.src_hidden ^= 1u << src; app.scroll[VIEW_SEARCH].pos = app.scroll[VIEW_SEARCH].target = 0; }
-        x += w + 6 * s;
-    }
 
-    // Right side: "Hide installed", and before it the count (or what's loading).
+    // Right side first, as the filters stop before it: "Hide installed".
     String8 hl = str8_lit("Hide installed");
-    F32 hx = r.x1 - f_text_width(ui.font.caption, hl);
+    F32 hx = r.x1 - f_text_width(ui.font.caption, hl), cbx = hx - 22 * s;
     f_draw_text(ui.font.caption, hx, r.y0 + (r.y1 - r.y0 - ui.font.caption->line_height) * 0.5f, hl, C_DIM, 0);
-    F32 cbx = hx - 22 * s;
-    if (ui_checkbox(str8_lit("hide installed"), cbx, (r.y0 + r.y1) * 0.5f, app.hide_installed)) app.hide_installed = !app.hide_installed;
     Rect hit = rect(cbx, y, r.x1, y + h);
-    if (ui_clicked(hit) && !point_in(rect(cbx, y, cbx + 16 * s, y + h), ui.in.press_x, ui.in.press_y)) app.hide_installed = !app.hide_installed;
+    B32 toggle = ui_checkbox(str8_lit("hide installed"), cbx, (r.y0 + r.y1) * 0.5f, app.hide_installed);
+    if (ui_clicked(hit) && !point_in(rect(cbx - 6 * s, y, cbx + 22 * s, y + h), ui.in.press_x, ui.in.press_y)) toggle = 1;
+    if (toggle) app.hide_installed = !app.hide_installed;
+
+    Rect b;
+    if (draw_filter(&x, y, h, str8_lit("Sort"), str8_cstring(sort_names[browse_sort()]), 200 * s, 0, &b)) { app.sort_btn = b; wm_defer(show_sort_menu); }
+    String8 cat = app.subcategory >= 0 ? str8_pushf(fa, "%s \xE2\x80\xBA %s", cat_categories[app.category].name, cat_subcategories[app.subcategory].name)
+                : app.category >= 0 ? str8_cstring(cat_categories[app.category].name) : str8_lit("All");
+    if (draw_filter(&x, y, h, str8_lit("Category"), cat, 200 * s, app.category >= 0, &b)) { app.cat_btn = b; wm_defer(show_category_menu); }
+    String8 src = sources_label(fa);
+    F32 room = cbx - 16 * s - x - f_text_width(ui.font.caption, str8_lit("Sources")) - 40 * s; // what a narrow window leaves
+    if (draw_filter(&x, y, h, str8_lit("Sources"), src, room, !str8_match(src, str8_lit("All"), 0), &b)) { app.src_btn = b; wm_defer(show_sources_menu); }
+
+    // Before "Hide installed", when there's room: the count (or what's loading).
     String8 info = app.catalog_served < app.catalog_asked && app.cat.count ? str8_lit("Updating the list...")
                  : str8_pushf(fa, "%.*s addon%s", S8F(str8_thousands(fa, (S64)app.order_count)), app.order_count == 1 ? "" : "s");
     F32 iw = f_text_width(ui.font.caption, info);
@@ -1270,7 +1324,14 @@ static B32 draw_search(Rect area)
     // Search field
     ui.clip = area;
     Rect field = rect(area.x0 + 12 * s, area.y0 + 12 * s, area.x1 - 12 * s, area.y0 + 48 * s);
-    ui_text_field(field, &app.query, str8_lit("Filter by name, or paste a GitHub / WoWInterface / CurseForge / Wago link and press Enter"), 0, C_ACCENT_BG);
+    // A soft bar with a magnifying glass; its rim lights up while there's a query.
+    r_rect(field, C_BG, 8 * s, 0, 0.5f);
+    f_draw_text(ui.font.glyphs_big, field.x0 + 12 * s, (field.y0 + field.y1 - ui.font.glyphs_big->line_height) * 0.5f, str8_lit("\xEE\x9C\xA1"), C_FAINT, 0); // Search
+    V4 no_border = C_BG;
+    no_border.w = 0;
+    ui_text_field(rect(field.x0 + 26 * s, field.y0, field.x1, field.y1), &app.query,
+                  str8_lit("Filter by name, or paste a GitHub / WoWInterface / CurseForge / Wago link and press Enter"), 0, no_border);
+    if (app.query.len) r_rect(field, C_ACCENT_BG, 8 * s, ui_px(), 0.5f);
 
     // Left open for a long time: refresh the catalog once in the background.
     if (app.catalog_saved && cat_now() - app.catalog_saved > CAT_MAX_AGE && app.catalog_served >= app.catalog_asked) {

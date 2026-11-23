@@ -64,6 +64,14 @@ version until you unpin them.
 
 ![What's new: the release notes of every version since the installed one](screenshots/changes.png)
 
+## Make it yours
+
+Ten themes, each with its own colors, emblem and ornaments: from Tinker's gold and gems to Void,
+Frostbound, Inferno, Fel, Bloodrage, Radiance, Wildgrowth and Stormcaller, or plain Slate. Pick one in
+**Settings**.
+
+![Four of the themes: Void, Frostbound, Bloodrage and Stormcaller](screenshots/themes.png)
+
 ## Built to be trusted with your UI
 
 | | |
@@ -118,7 +126,7 @@ statistics and has no telemetry. What it keeps on your PC:
 
 | Where | What |
 |---|---|
-| `%APPDATA%\wam` | settings (chosen WoW folder, window layout), the Wago key (encrypted for your Windows user), downloads already installed |
+| `%APPDATA%\wam` | settings (chosen WoW folder, theme, window layout), the Wago key (encrypted for your Windows user), downloads already installed |
 | `%LOCALAPPDATA%\wam` | caches: the addon catalog, pictures, your addons' fingerprints, the download window's browser profile; `tasks.log`, how long each install, update or removal took (for reporting a slow moment) |
 | `<WoW>\<flavor>\Interface\wam.json` | which addons wam installed, and from where |
 | `<WoW>\<flavor>\WTF-Backup` | the settings backups |

@@ -32,6 +32,7 @@ typedef struct Snapshot {
     Row *rows;
     U64 row_count, tracked, updates, folders;
     F64 scan_ms;
+    U64 checked;        // it came from a check for updates that went through, at this time (else 0)
 } Snapshot;
 
 typedef struct SearchSnap {
@@ -116,6 +117,7 @@ static Lane refresh_lane, suggest_lane, downloads_lane, catalog_lane, details_la
 static Task task_q[TASK_QUEUE];
 static U32 task_head, task_tail;
 static char status_text[512];
+static U64 status_ms;          // when it was set: a message that isn't an error gives way to the summary after a while
 static char status_url[512];   // with an error: "Open download page" target
 static B32 status_is_error;
 
@@ -191,6 +193,7 @@ typedef struct App {
     int flavor;
     View view;
     Snapshot *snap;                 // = snaps[flavor]: what the Installed view shows
+    U64 checked[FLAVOR_COUNT];      // when each flavor was last checked for updates (0: not since wam started)
     Snapshot *snaps[FLAVOR_COUNT];  // the latest listing of each flavor, so switching back is instant
     U32 refresh_asked, refresh_served; // listing requests: loading while served < asked
     U32 suggest_asked, suggest_served; // searches and pages on the suggestion lane, the same way
@@ -209,7 +212,7 @@ typedef struct App {
     U32 cat_counts[CAT_CATEGORY_COUNT]; // per category, among what the other filters show
     U32 sub_counts[CAT_SUBCATEGORY_COUNT];
     U64 cat_any;               // of those, how many (for "All categories")
-    Rect cat_btn;              // where the category menu drops down from
+    Rect sort_btn, cat_btn, src_btn; // where the filters' menus drop down from
     U32 src_count[SRC_COUNT];  // catalog entries per source (which chips to show)
     U32 link_cat_version; Snapshot *link_snap; S32 link_snap_seq; B32 link_valid; // what cat_link last paired (see browse_link)
     // The ordered list, re-sorted only when what it depends on changes (see browse_order).
@@ -276,6 +279,7 @@ typedef struct App {
     char settings_note[160]; B32 settings_note_error; // what the last save did
     F32 settings_h;         // the panel's height, measured by the last frame
     F64 init_ms;
+    B32 show_perf;          // the status line also shows frame and startup times (settings.json)
     U64 t_start;
 } App;
 
@@ -360,6 +364,7 @@ static void worker_set_status_url(String8 msg, B32 is_error, String8 url)
     memcpy(status_text, msg.str, n);
     status_text[n] = 0;
     status_is_error = is_error;
+    status_ms = os_now_ms();
     n = str8_starts_with(url, str8_lit("https://"), 1) ? Min(url.size, sizeof(status_url) - 1) : 0;
     if (n) memcpy(status_url, url.str, n);
     status_url[n] = 0;

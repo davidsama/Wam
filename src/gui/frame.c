@@ -4,6 +4,34 @@
 
 static void app_event(WM_Event *e); // main_gui.c: keys and typing
 
+//- The status line
+
+#define STATUS_SHOW_MS 12000 // how long a message stays before the summary comes back
+#define STATUS_TICK_MS 15000
+
+// Now and then a frame, so an old message goes and "checked 2 min ago" stays true in an idle window.
+static void status_tick(void) { wm_request_frame(); }
+
+// "69 addons installed in Retail · 3 updates ready · checked 2 min ago"
+static String8 status_summary(Arena *a, Snapshot *snap)
+{
+    U64 n = 0, updates = 0;
+    for (U64 i = 0; i < snap->row_count; i += 1) {
+        Row *r = &snap->rows[i];
+        if (app.gone.count && keyset_has(&app.gone, r->key)) continue; // being removed
+        n += 1;
+        updates += r->update && !r->pinned;
+    }
+    U64 checked = app.checked[snap->flavor];
+    String8List l = { 0 };
+    str8_list_push(a, &l, n ? str8_pushf(a, "%llu addon%s installed in %s", n, n == 1 ? "" : "s", wow_flavors[snap->flavor].label)
+                            : str8_pushf(a, "No addons installed in %s", wow_flavors[snap->flavor].label));
+    if (updates) str8_list_push(a, &l, str8_pushf(a, "%llu update%s ready", updates, updates == 1 ? "" : "s"));
+    else if (n && checked) str8_list_push(a, &l, str8_lit("no updates found"));
+    if (checked) str8_list_push(a, &l, str8_pushf(a, "checked %.*s", S8F(fmt_ago(a, checked))));
+    return str8_list_join(a, &l, str8_lit("  \xC2\xB7  "));
+}
+
 //- Frame
 
 static void switch_flavor(int f)
@@ -43,6 +71,7 @@ static void set_wow_root(String8 root)
     app.root_gen += 1; // anything still running for the old install is dropped when it arrives
     detect_flavors();
     for (int f = 0; f < FLAVOR_COUNT; f += 1) if (app.snaps[f]) { arena_release(app.snaps[f]->arena); app.snaps[f] = 0; }
+    memset(app.checked, 0, sizeof(app.checked));
     app.snap = 0;
     switch_flavor(app.flavor); // clears search, downloads, selection and status; queues a refresh
     push_task(TASK_SYNC, str8(0, 0));
@@ -115,13 +144,12 @@ static B32 app_frame(void)
     r_rect_gradient(rect(0, 0, W, header_h), ui_mix(C_PANEL, C_HOVER, 0.6f), C_PANEL, 0, 0, 0, 0);
     // The header is the window's title bar: what isn't a widget in it drags the window.
     wm_caption(app.viewer_open || app.settings_open || app.changes_open ? 0 : header_h);
-    // What fits: the flavor tabs always do. When the window is narrow, the name goes first (the logo
+    // What fits: the flavor tabs always do. When the window is narrow, the name goes first (the emblem
     // stays), then the game version, and then the install button shrinks to a folder icon.
     F32 tabs_w = 0;
     for (int f = 0; f < FLAVOR_COUNT; f += 1) {
-        if (app.flavor_exists[f]) tabs_w += ui_pill_tab_width(str8_cstring(wow_flavors[f].label)) + 6 * s;
+        if (app.flavor_exists[f]) tabs_w += ui_title_tab_width(str8_cstring(wow_flavors[f].label)) + 6 * s;
     }
-    String8 title = str8_lit("WoW Addons");
     String8 gv = snap && snap->client.valid ? str8_pushf(fa, "game %u.%u.%u", snap->client.major, snap->client.minor, snap->client.patch) : str8(0, 0);
     String8 root_label = app.wow_root.size ? str8_pushf(fa, "%.*s  \xE2\x96\xBE", S8F(app.wow_root)) : str8_lit("Choose WoW folder  \xE2\x96\xBE");
     F32 hright = ui_window_buttons(W, header_h) - 16 * s;
@@ -139,7 +167,7 @@ static B32 app_frame(void)
         if (sg.clicked) settings_open();
         hright = b.x0 - 8 * s;
     }
-    F32 logo = 32 * s, title_w = f_text_width(ui.font.title, title) + 24 * s;
+    F32 logo = 32 * s, word_h = 18 * s, title_w = wordmark_width(word_h) + 24 * s;
     F32 gv_w = gv.size ? f_text_width(ui.font.caption, gv) + 16 * s : 0;
     F32 root_min = Min(120 * s, f_text_width(ui.font.caption, root_label) + 24 * s), root_icon = 46 * s;
     F32 room = hright - (16 * s + logo + 10 * s) - tabs_w - 18 * s; // what's left for the name, version and install
@@ -147,19 +175,23 @@ static B32 app_frame(void)
     B32 show_gv = gv.size && room - (show_title ? title_w : 0) >= gv_w + root_min;
     B32 root_as_icon = room - (show_title ? title_w : 0) - (show_gv ? gv_w : 0) < root_min;
 
-    // The logo (built into the .exe), then the name in the trim's gold.
+    // The theme's emblem, then the name in its metal.
     F32 x = 16 * s;
-    if (ui_image(rect(x, (header_h - logo) * 0.5f, x + logo, (header_h + logo) * 0.5f), str8_lit("res:LOGO"), UI_IMG_ICON, 0, ui_hex(0xffffff, 1))) x += logo + 10 * s;
-    else x += 4 * s;
-    if (show_title) x = f_draw_text(ui.font.title, x, (header_h - ui.font.title->line_height) * 0.5f, title, ui.theme.heading, 0) + 24 * s;
-    else x += 4 * s;
+    ui_emblem(&ui.theme, x + logo * 0.5f, header_h * 0.5f, 28 * s);
+    x += logo + 10 * s;
+    if (show_title) {
+        draw_wordmark(x, (header_h - word_h) * 0.5f, word_h);
+        x += title_w;
+    } else {
+        x += 4 * s;
+    }
     for (int f = 0; f < FLAVOR_COUNT; f += 1) {
         if (!app.flavor_exists[f]) continue;
         String8 label = str8_cstring(wow_flavors[f].label);
-        F32 bw = ui_pill_tab_width(label), bh = 28 * s;
+        F32 bw = ui_title_tab_width(label), bh = 28 * s;
         Rect b = rect(x, (header_h - bh) * 0.5f, x + bw, (header_h + bh) * 0.5f);
         wm_caption_hole(b);
-        if (ui_pill_tab(b, label, f == app.flavor)) switch_flavor(f);
+        if (ui_title_tab(b, label, f == app.flavor)) switch_flavor(f);
         x = b.x1 + 6 * s;
     }
     if (show_gv) {
@@ -321,11 +353,13 @@ static B32 app_frame(void)
     String8 status = str8_copy(fa, str8_cstring(status_text));
     String8 url = str8_copy(fa, str8_cstring(status_url));
     B32 is_error = status_is_error;
+    B32 old = os_now_ms() - status_ms > STATUS_SHOW_MS;
     os_mutex_unlock(&status_lock);
-    if (!status.size && snap) {
-        status = str8_pushf(fa, "%llu tracked  \xC2\xB7  %llu folders scanned in %.0f ms  \xC2\xB7  %.*s",
-                            snap->tracked, snap->folders, snap->scan_ms, S8F(snap->addons_dir));
-    }
+    // A message stays while wam is at it (or files are on their way from CurseForge) and a little
+    // after; an error until the next message. Otherwise: the summary.
+    if (old && !is_error && !app.pending && !app.waiting_count) status = str8(0, 0);
+    B32 summary = !status.size && snap;
+    if (summary) status = status_summary(fa, snap);
     if (!app.api_key.size && !app.wago_key[0] && !status_text[0] && !snap) status = str8_lit("CurseForge unavailable in this build; GitHub, WoWInterface and Wago (with your key) work");
     F32 left = 20 * s;
     if (app.pending) {
@@ -333,9 +367,9 @@ static B32 app_frame(void)
         left += 20 * s;
     }
     // fps: frames actually drawn in the last second (they only come on demand, so it reads low when idle)
-    String8 perf = str8_pushf(fa, "%u fps  \xC2\xB7  cpu %.2f ms  \xC2\xB7  startup %.0f ms", ui.fps, ui.frame_ms, app.init_ms);
+    String8 perf = !app.show_perf ? str8(0, 0) : str8_pushf(fa, "%u fps  \xC2\xB7  cpu %.2f ms  \xC2\xB7  startup %.0f ms", ui.fps, ui.frame_ms, app.init_ms);
     F32 pw = f_text_width(ui.font.caption, perf);
-    F32 right = W - 20 * s - pw - 24 * s;
+    F32 right = W - 20 * s - (perf.size ? pw + 24 * s : 0);
     if (app.offer_count) {
         // Several addons only CurseForge's pages may serve (e.g. after Update all): open them on request.
         String8 label = str8_pushf(fa, "Get %u from CurseForge###get from curseforge", app.offer_count);
@@ -355,8 +389,10 @@ static B32 app_frame(void)
         if (ui_small_button(b, label, C_ACCENT_BG, C_ACCENT)) os_open_url(url);
         right = b.x0 - 12 * s;
     }
-    f_draw_text(ui.font.caption, left, sy, status, is_error ? C_ERROR : C_DIM, right - left);
-    f_draw_text(ui.font.caption, W - 20 * s - pw, sy, perf, C_FAINT, 0);
+    F32 end = f_draw_text(ui.font.caption, left, sy, status, is_error ? C_ERROR : C_DIM, right - left);
+    Rect sr = rect(left, sy, end, sy + ui.font.caption->line_height);
+    if (summary && ui_mouse_in(sr)) ui_tooltip(sr, snap->addons_dir); // where they are
+    if (perf.size) f_draw_text(ui.font.caption, W - 20 * s - pw, sy, perf, C_FAINT, 0);
 
     if (app.viewer_open) animating |= draw_viewer();
     if (app.changes_open) animating |= draw_changes();

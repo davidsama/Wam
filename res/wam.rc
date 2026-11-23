@@ -1,8 +1,7 @@
-// wam.rc - the GUI's resources: its icon, the logo drawn in the window's header (ui_image
-// "res:LOGO"), both made by tools\make_icon.c, and its version (version.rc).
+// wam.rc - the GUI's resources: its icon (made by tools\make_icon.c) and its version
+// (version.rc).
 
 1 ICON "wam.ico"
-LOGO RCDATA "logo.png"
 
 #define WAM_FILE_DESCRIPTION "wam - WoW Addon Manager"
 #define WAM_FILE_NAME        "wam.exe"

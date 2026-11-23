@@ -80,6 +80,7 @@
 #include "gui/themes.c"     // the looks to pick from
 #include "gui/settings.c"   // the settings popup
 #include "gui/changes.c"    // the changes popup (what an update would bring)
+#include "gui/wordmark.c"   // the name in the header
 #include "gui/frame.c"
 #include "gui/session.c"
 
@@ -342,6 +343,7 @@ static void on_snapshot(U64 param, void *ptr)
     (void)param;
     Snapshot *snap = (Snapshot *)ptr;
     if (snap->gen != app.root_gen) { arena_release(snap->arena); return; } // from the previous install
+    if (snap->checked) app.checked[snap->flavor] = snap->checked;
     // Keep it for its flavor (switching back is instant) unless what we have was read later.
     Snapshot **slot = &app.snaps[snap->flavor];
     if (*slot && (*slot)->seq > snap->seq) { arena_release(snap->arena); return; }
@@ -452,7 +454,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     app.category = app.subcategory = -1;
     {
         Temp t = temp_begin(app.arena);
-        app.detail_share = (F32)wam_settings_load(t.arena).detail_share;
+        WamSettings st = wam_settings_load(t.arena);
+        app.detail_share = (F32)st.detail_share;
+        app.show_perf = st.show_perf;
         temp_end(t);
     }
     ui_image_fetch = image_fetch;
@@ -466,6 +470,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         push_task(TASK_REFRESH, str8(0, 0)); // show local state right away
         push_task(TASK_SYNC, str8(0, 0));    // then recognize + check updates (GitHub/WoWInterface need no key)
     }
+    wm_timer_start(status_tick, STATUS_TICK_MS);
     int code = wm_window_run(show);
     WM_WindowPlace *p = &wm_window_place;
     if (p->w > 0 && p->h > 0) wam_save_window((WamWindow){ p->x, p->y, p->w, p->h, p->maximized });

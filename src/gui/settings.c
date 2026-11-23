@@ -189,6 +189,18 @@ static void draw_settings(void)
     }
 
     //- Appearance
+    {
+        // On the heading's line, at the right: the status line's performance numbers.
+        String8 label = str8_lit("Performance numbers in the status line");
+        F32 lw = f_text_width(ui.font.caption, label), lx = x + w - lw, cy = y + ui.font.bold->line_height * 0.5f;
+        B32 toggle = ui_checkbox(str8_lit("show performance"), lx - 22 * s, cy, app.show_perf);
+        f_draw_text(ui.font.caption, lx, cy - ui.font.caption->line_height * 0.5f, label, C_DIM, 0);
+        if (ui_clicked(rect(lx, cy - 10 * s, lx + lw, cy + 10 * s))) toggle = 1;
+        if (toggle) {
+            app.show_perf = !app.show_perf;
+            wam_save_show_perf(app.show_perf);
+        }
+    }
     y = settings_heading(x, y, w, "Appearance", 0);
     y = settings_themes(x, y, w) + 22 * s;
 
