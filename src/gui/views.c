@@ -82,11 +82,11 @@ static U8 site_only_of(String8 id)
 
 //- An addon row: the same look in Installed and Get addons
 //
-// Picture, then the name and its provider pills (links to the addon's pages) and tags, then a
-// faint line of facts; under it one line of description. Each view adds its own controls around
-// it (Installed: a checkbox before, Update / Remove after; Get addons: Install after).
-
-#define ADDON_ROW_H 56
+// Picture, then three lines that get quieter as they go: the name (and what's new, in Installed),
+// what the addon does, and a faint line of facts ending in where it's published (each source a
+// link to its page; the first is where wam installs it from). Each view adds its own controls
+// around it (Installed: a checkbox before, Update / Remove after; Get addons: Install after).
+#define ADDON_ROW_H 64
 
 typedef struct RowLook {
     Rect rr;                 // the row
@@ -98,17 +98,17 @@ typedef struct RowLook {
     String8 title;
     V4 title_color;
     U8 *marks; U32 mark_count; // fuzzy-match positions to highlight in the title
-    U32 pill_count;
+    U32 pill_count;          // the sources it's published on, named at the end of the facts
     int pill_src[4];
     String8 pill_url[4];
-    B32 pill_filled[4];      // filled: where wam installs it from; outlined: also published there
-    U8 site_only;            // SITE_ONLY_*: the tag after the pills
-    String8 meta;            // faint facts after the pills ("author · 12M downloads · updated 2 days ago")
-    String8 extra;           // after the facts, in its own color (Installed: "→ 1.2.4")
+    B32 pill_filled[4];      // where wam installs it from (named first, a little brighter)
+    U8 site_only;            // SITE_ONLY_*: said after the sources
+    String8 meta;            // the facts ("author · 12M downloads · updated 2 days ago")
+    String8 extra;           // after the name, in its own color (Installed: "→ 1.2.4")
     V4 extra_color;
     B32 extra_link;          // the extra is a link: underlined on hover (the caller handles the click)
     Rect extra_rect;         // out: where the extra was drawn (empty if it didn't fit)
-    String8 line2;           // the line under the name (a summary)
+    String8 line2;           // what it does (a summary)
     V4 line2_color;
 } RowLook;
 
@@ -119,58 +119,82 @@ static void draw_icon(Rect r, String8 url, String8 name, int src, F32 radius)
     ui_avatar(r, url, name, ui_hex(src_fg[c], 1), ui_hex(src_bg[c], 1), radius);
 }
 
-// Draws the row's content. Returns 1 if the last press was on one of its pills (a link: the
-// caller shouldn't treat that click as one on the row); a pill clicked opens its page.
+// The row's hover or selection: a rounded fill inset from the list's edges.
+static void draw_row_fill(Rect rr, V4 color)
+{
+    F32 s = ui.scale;
+    r_rect(rect(rr.x0 + 6 * s, rr.y0 + 2 * s, rr.x1 - 6 * s, rr.y1 - 2 * s), color, 8 * s, 0, 0.5f);
+}
+
+// Draws the row's content. Returns 1 if the last press was on one of its links (the caller
+// shouldn't treat that click as one on the row); a source clicked opens its page.
 static B32 draw_row_look(RowLook *l)
 {
     F32 s = ui.scale;
+    Arena *fa = ui.frame_arena;
     Rect rr = l->rr;
     F32 row_h = rr.y1 - rr.y0;
-    F32 icon = 36 * s, ix = rr.x0 + 16 * s + l->lead;
-    draw_icon(rect(ix, rr.y0 + (row_h - icon) * 0.5f, ix + icon, rr.y0 + (row_h + icon) * 0.5f), l->icon_url, l->title, l->icon_src, 8 * s);
-    F32 tx = ix + icon + 12 * s;
-    F32 lh2 = ui.font.caption->line_height + 4 * s;
-    F32 top = rr.y0 + (row_h - ui.font.bold->line_height - (l->line2.size ? lh2 : 0)) * 0.5f; // one line: centered
+    F32 icon = 40 * s, ix = rr.x0 + 16 * s + l->lead;
+    draw_icon(rect(ix, rr.y0 + (row_h - icon) * 0.5f, ix + icon, rr.y0 + (row_h + icon) * 0.5f), l->icon_url, l->title, l->icon_src, 9 * s);
+    F32 tx = ix + icon + 14 * s, right = l->text_right, tw = right - tx;
+    F32 lh_name = ui.font.bold->line_height, lh = ui.font.caption->line_height, gap = 2 * s;
+    B32 has_facts = l->meta.size || l->pill_count || l->site_only;
+    F32 h = lh_name + (l->line2.size ? gap + lh : 0) + (has_facts ? gap + lh : 0);
+    F32 y = rr.y0 + (row_h - h) * 0.5f;
+    B32 pressed_link = 0;
 
-    // Name: leave room for the pills (each a link) and the tag.
-    F32 pill_h = ui.font.caption->line_height + 2 * s, pill_gap = 6 * s, pills_w = 0;
-    for (U32 k = 0; k < l->pill_count; k += 1) pills_w += f_text_width(ui.font.caption, str8_cstring(source_names[l->pill_src[k]])) + 14 * s + pill_gap;
-    F32 name_max = Max(60 * s, l->text_right - tx - pills_w - 120 * s);
-    F32 x = l->marks ? ui_text_highlighted(ui.font.bold, tx, top, l->title, l->marks, l->mark_count, l->title_color, C_ACCENT_HI, name_max)
-                     : f_draw_text(ui.font.bold, tx, top, l->title, l->title_color, name_max);
-    F32 py = top + (ui.font.bold->line_height - pill_h) * 0.5f;
-    B32 pressed_pill = 0;
-    x += 10 * s;
-    for (U32 k = 0; k < l->pill_count; k += 1) {
-        F32 w = f_text_width(ui.font.caption, str8_cstring(source_names[l->pill_src[k]])) + 14 * s;
-        Rect pr = rect(x, py, x + w, py + pill_h);
-        B32 hot = ui_mouse_in(pr) && ui_mouse_in(l->list) && l->pill_url[k].size;
-        draw_source_pill(pr, l->pill_src[k], l->pill_filled[k], hot);
-        if (point_in(pr, ui.in.press_x, ui.in.press_y)) pressed_pill = 1;
-        if (hot && ui.in.released && point_in(pr, ui.in.press_x, ui.in.press_y)) os_open_url(l->pill_url[k]);
-        x += w + pill_gap;
-    }
-    x -= pill_gap;
-    if (l->site_only) x = draw_site_tag(x + 6 * s, py + pill_h * 0.5f, l->site_only, l->text_right - 8 * s);
-
-    // The extra (in its color) first, then the facts, as far as they fit.
-    F32 my = top + (ui.font.bold->line_height - ui.font.caption->line_height) * 0.5f;
-    F32 mx = x + 12 * s;
-    if (l->extra.size && l->text_right - 12 * s - mx > 30 * s) {
-        F32 max_w = l->text_right - 12 * s - mx;
+    // The name, then the extra.
+    F32 x = l->marks ? ui_text_highlighted(ui.font.bold, tx, y, l->title, l->marks, l->mark_count, l->title_color, C_ACCENT_HI, tw)
+                     : f_draw_text(ui.font.bold, tx, y, l->title, l->title_color, tw);
+    l->extra_rect = rect(0, 0, 0, 0);
+    if (l->extra.size && right - x - 12 * s > 30 * s) {
+        F32 ex = x + 12 * s, ey = y + (lh_name - lh) * 0.5f, max_w = right - ex;
         if (l->extra_link) {
-            mx = ui_link_text(ui.font.caption, mx, my, l->extra, l->extra_color, max_w, &l->extra_rect);
-            if (point_in(l->extra_rect, ui.in.press_x, ui.in.press_y)) pressed_pill = 1; // a link: not a click on the row
+            ui_link_text(ui.font.caption, ex, ey, l->extra, l->extra_color, max_w, &l->extra_rect);
+            if (point_in(l->extra_rect, ui.in.press_x, ui.in.press_y)) pressed_link = 1; // a link: not a click on the row
         } else {
-            F32 ex = mx, lh = ui.font.caption->line_height;
-            mx = f_draw_text(ui.font.caption, mx, my, l->extra, l->extra_color, max_w);
-            l->extra_rect = rect(ex - 4 * s, my - 3 * s, mx + 4 * s, my + lh + 3 * s);
+            F32 end = f_draw_text(ui.font.caption, ex, ey, l->extra, l->extra_color, max_w);
+            l->extra_rect = rect(ex - 4 * s, ey - 3 * s, end + 4 * s, ey + lh + 3 * s);
         }
-        mx += 12 * s;
     }
-    if (l->meta.size && l->text_right - 12 * s - mx > 20 * s) f_draw_text(ui.font.caption, mx, my, l->meta, C_FAINT, l->text_right - 12 * s - mx);
-    if (l->line2.size) f_draw_text(ui.font.caption, tx, top + ui.font.bold->line_height + 4 * s, l->line2, l->line2_color, l->text_right - tx - 16 * s);
-    return pressed_pill;
+    y += lh_name + gap;
+
+    // What it does.
+    if (l->line2.size) {
+        f_draw_text(ui.font.caption, tx, y, l->line2, l->line2_color, tw);
+        y += lh + gap;
+    }
+
+    // The facts, then the sources (links), then how the files come.
+    if (has_facts) {
+        String8 dot = str8_lit("  \xC2\xB7  ");
+        F32 mx = tx;
+        if (l->meta.size) mx = f_draw_text(ui.font.caption, mx, y, l->meta, C_FAINT, right - mx);
+        for (U32 k = 0; k < l->pill_count && right - mx > 40 * s; k += 1) {
+            String8 sep = k ? str8_lit(", ") : l->meta.size ? dot : str8(0, 0);
+            mx = f_draw_text(ui.font.caption, mx, y, sep, C_FAINT, right - mx);
+            char *src_name = source_names[l->pill_src[k]];
+            V4 c = l->pill_filled[k] ? C_DIM : C_FAINT;
+            if (l->pill_url[k].size) {
+                Rect hit;
+                mx = ui_link_text(ui.font.caption, mx, y, str8_cstring(src_name), c, right - mx, &hit);
+                if (point_in(hit, ui.in.press_x, ui.in.press_y)) pressed_link = 1;
+                if (ui_mouse_in(hit) && ui_mouse_in(l->list)) {
+                    ui_tooltip(hit, l->pill_filled[k] ? str8_pushf(fa, "wam installs it from %s. Click to open its page there.", src_name)
+                                                      : str8_pushf(fa, "Also on %s. Click to open its page there.", src_name));
+                    if (ui_clicked(hit)) os_open_url(l->pill_url[k]);
+                }
+            } else {
+                mx = f_draw_text(ui.font.caption, mx, y, str8_cstring(src_name), c, right - mx);
+            }
+        }
+        String8 tag = site_tag_label(l->site_only);
+        if (tag.size && right - mx > 80 * s) {
+            mx = f_draw_text(ui.font.caption, mx, y, dot, C_FAINT, right - mx);
+            f_draw_text(ui.font.caption, mx, y, tag, l->site_only == SITE_ONLY_PAGE ? C_WARN : C_FAINT, right - mx);
+        }
+    }
+    return pressed_link;
 }
 
 //- Views
@@ -247,7 +271,6 @@ static B32 draw_installed(Rect list)
         if (i < (S64)npend) {
             // An install on its way: its picture and name, and how far it is.
             PendingInstall *p = pend[i];
-            if (i > 0) r_rect(rect(rr.x0 + 16 * s, ry, rr.x1 - 16 * s, ry + ui_px()), C_LINE, 0, 0, 0);
             RowLook look = { 0 };
             look.rr = rr; look.list = list; look.lead = 26 * s; look.text_right = col_actions - 8 * s;
             look.icon_url = str8_cstring(p->icon); look.icon_src = p->src;
@@ -261,12 +284,12 @@ static B32 draw_installed(Rect list)
         }
         Row *row = &snap->rows[vis[i - npend]];
         B32 checked = keyset_has(&app.selected, row->key);
-        if (checked) r_rect(rr, C_SELECTED, 0, 0, 0);
-        else if (ui_mouse_in(rr) && ui_mouse_in(list)) r_rect(rr, C_HOVER, 0, 0, 0);
-        if (i > 0) r_rect(rect(rr.x0 + 16 * s, ry, rr.x1 - 16 * s, ry + ui_px()), C_LINE, 0, 0, 0);
+        B32 row_hot = ui_mouse_in(rr) && ui_mouse_in(list);
+        if (checked) draw_row_fill(rr, C_SELECTED);
+        else if (row_hot) draw_row_fill(rr, C_HOVER);
 
-        // The same look as Get addons: picture, name, provider pills (links: filled = where wam
-        // installs it from, outlined = also published there), facts; the description under it.
+        // The same look as Get addons: picture, name and what's new, the description, then facts
+        // and sources (links to their pages: where wam installs it from first).
         // The catalog knows its picture and summary: under its tracked id, else an id its .toc names.
         SearchResult *e = 0;
         for (U32 k = 0; k < row->cat_id_count && !e; k += 1) e = cat_find(&app.cat, row->cat_ids[k]);
@@ -354,7 +377,7 @@ static B32 draw_installed(Rect list)
         if (row->id.size) {
             // Pin: keep this version. Shown while pinned (lit), else while the row is hovered.
             Rect pb = rect(x - bh, by, x, by + bh);
-            B32 row_hot = ui_mouse_in(rr) && ui_mouse_in(list), hot = ui_mouse_in(pb) && ui_mouse_in(list);
+            B32 hot = ui_mouse_in(pb) && ui_mouse_in(list);
             if (row->pinned || row_hot) {
                 if (hot) r_rect(pb, C_BUTTON_HI, 6 * s, 0, 0.5f);
                 ui_text_centered(ui.font.glyphs_big, pb, row->pinned ? str8_lit("\xEE\xA1\x82") : str8_lit("\xEE\x9C\x98"), // PinnedFill / Pin
@@ -1290,12 +1313,11 @@ static B32 draw_search(Rect area)
         F32 ry = rr.y0;
         B32 hot = ui_mouse_in(rr) && ui_mouse_in(list), sel = i == app.sel_index;
         if (hot) app.hover_index = i;
-        if (sel) r_rect(rr, C_SELECTED, 0, 0, 0);
-        else if (hot) r_rect(rr, C_HOVER, 0, 0, 0);
-        if (i > 0 && !sel && i - 1 != app.sel_index) r_rect(rect(rr.x0 + 16 * s, ry, rr.x1 - 16 * s, ry + ui_px()), C_LINE, 0, 0, 0);
+        if (sel) draw_row_fill(rr, C_SELECTED);
+        else if (hot) draw_row_fill(rr, C_HOVER);
 
-        // Picture, name, its source (a link to its page; an addon on two sources: the other one's
-        // outlined after it), author, downloads, last update; the summary under it.
+        // Picture, name, the summary; author, downloads, last update and its sources (links to
+        // their pages: where it installs from first, then the other one for a two-source addon).
         SearchResult *twin = cat_twin(&app.cat, r);
         RowFacts rf = row_facts(r);
         RowLook look = { 0 };
@@ -1318,8 +1340,8 @@ static B32 draw_search(Rect area)
         F32 bh = 28 * s, by = ry + (row_h - bh) * 0.5f, x = rr.x1 - 16 * s;
         Rect action = rect(x, by, x, by + bh);
         if (row_installed(r)) {
-            String8 label = str8_lit("Installed");
-            f_draw_text(ui.font.normal, x - f_text_width(ui.font.normal, label), ry + (row_h - ui.font.normal->line_height) * 0.5f, label, C_GREEN, 0);
+            String8 label = str8_lit("\xE2\x9C\x93 Installed");
+            f_draw_text(ui.font.caption, x - f_text_width(ui.font.caption, label), ry + (row_h - ui.font.caption->line_height) * 0.5f, label, C_GREEN, 0);
         } else if (feedback_installing(r->id)) {
             // The Install button becomes the install's progress bar.
             action = rect(x - 118 * s, by, x, by + bh);
