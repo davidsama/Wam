@@ -14,8 +14,6 @@ rem /PDBALTPATH: the exe names its .pdb without this folder (no build paths in w
 set LINK=/INCREMENTAL:NO /OPT:REF /PDBALTPATH:%%_PDB%%
 
 if not exist build mkdir build
-rem Embed the CurseForge API key from cf_key.txt (gitignored), if present.
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\gen_key.ps1 cf_key.txt build\cf_key.h || goto fail_nopop
 rem The GUI's CurseForge download window uses WebView2: fetch its SDK header and static loader once.
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\fetch_webview2.ps1 build\webview2 || goto fail_nopop
 pushd build

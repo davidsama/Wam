@@ -1673,7 +1673,7 @@ static B32 draw_search(Rect area)
             animating |= ui_loading_bar(rect(list.x0, list.y0, list.x1, list.y0 + 2 * s));
         } else if (!app.cf_key[0] && !app.cat.count) {
             ui_text_centered(ui.font.normal, rect(list.x0, cy, list.x1, cy + 24 * s),
-                               str8_lit("CurseForge search needs an API key, which this build doesn't include. Add yours in Settings."), C_DIM);
+                               str8_lit("CurseForge search needs your own API key. Add it in Settings."), C_DIM);
             ui_text_centered(ui.font.caption, rect(list.x0, cy + 28 * s, list.x1, cy + 48 * s),
                                str8_lit("Paste a link instead, e.g.  BigWigsMods/BigWigs   or   https://www.wowinterface.com/downloads/info5108-Clique.html"), C_FAINT);
         } else if (app.catalog_failed && !app.cat.count) {

@@ -5,7 +5,7 @@
 <h1 align="center">wam — WoW Addon Manager</h1>
 
 <p align="center">
-  <b>Every addon source in one tiny, fast app. No installer, no account, no ads.</b><br>
+  <b>Every addon source in one tiny, fast app. No installer, no ads, no tracking.</b><br>
   CurseForge · Wago · WoWInterface · GitHub · Tukui (ElvUI)
 </p>
 
@@ -28,7 +28,7 @@
 - **🛡 Careful with your setup.** Your addon settings are backed up before updates, a failed install
   rolls back, addons you edited yourself aren't overwritten, and removed addons go to the Recycle
   Bin.
-- **🙅 No account, no ads, no tracking.** wam talks only to the addon sites and sends nothing about
+- **🙅 No ads, no tracking.** wam has no account of its own, talks only to the addon sites and sends nothing about
   you anywhere. It's open source, so you can check.
 - **🧭 Finds your game by itself.** Retail, Classic, Classic Era, Anniversary and the PTR and beta
   clients, on any drive, and every flavor of each install.
@@ -101,7 +101,8 @@ framework to load.
 
 1. [Download `wam.exe`](../../releases/latest) and put it wherever you like.
 2. Run it. wam finds your World of Warcraft install and lists your addons.
-3. Open **Get addons**, pick something, press **Install**.
+3. For CurseForge addons, paste your own CurseForge API key in **Settings** (the cog at the top).
+4. Open **Get addons**, pick something, press **Install**.
 
 **Windows says "Windows protected your PC"?** New programs from small developers can get this
 SmartScreen warning until enough people have run them. Click **More info**, then **Run anyway**.
@@ -115,8 +116,10 @@ certutil -hashfile wam.exe SHA256
 ### Requirements
 
 - Windows 10 (version 1803 or later) or Windows 11, 64-bit.
+- CurseForge: finding, installing and updating its addons needs your own API key, from the
+  [CurseForge developer console](https://console.curseforge.com).
 - Wago: searching and installing from Wago needs your own Wago API key, which comes with a Wago
-  subscription. Paste it in **Settings** (the cog at the top). Everything else works without an account.
+  subscription. Paste it in **Settings** (the cog at the top). The other sources work without an account.
 - Addons whose authors allow downloads only from CurseForge's site open that page in a small window
   (Microsoft Edge WebView2, built into Windows 11 and current Windows 10), or in your browser.
 
@@ -127,7 +130,7 @@ statistics and has no telemetry. What it keeps on your PC:
 
 | Where | What |
 |---|---|
-| `%APPDATA%\wam` | settings (chosen WoW folder, theme, window layout), your own Wago and CurseForge keys, if you added them (encrypted for your Windows user), downloads already installed |
+| `%APPDATA%\wam` | settings (chosen WoW folder, theme, window layout), your own CurseForge and Wago keys, if you added them (encrypted for your Windows user), downloads already installed |
 | `%LOCALAPPDATA%\wam` | caches: the addon catalog, pictures, your addons' fingerprints, the download window's browser profile; `tasks.log`, how long each install, update or removal took (for reporting a slow moment) |
 | `<WoW>\<flavor>\Interface\wam.json` | which addons wam installed, and from where |
 | `<WoW>\<flavor>\WTF-Backup` | the settings backups |
@@ -151,12 +154,6 @@ tools\vsenv.bat        sets up the compiler in this window (once per window)
 build.bat release      builds build\wam.exe
 build.bat test         builds and runs the unit tests
 ```
-
-CurseForge needs an API key, which the published releases have built in. It isn't in this
-repository: a build of your own works with every other source, and with CurseForge once you get your
-own key from the [CurseForge developer console](https://console.curseforge.com) (put it in
-`cf_key.txt` before building, or paste it in Settings). Please don't ship builds with the
-release key extracted from wam.exe: it's tied to this app, and CurseForge can revoke it for everyone.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) explains how wam works, how the code is laid out, and how to
 send changes. Security problems: see [SECURITY.md](SECURITY.md).

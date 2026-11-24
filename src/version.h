@@ -4,8 +4,8 @@
 // resource compiler includes it too.
 
 #define WAM_VERSION_MAJOR 1
-#define WAM_VERSION_MINOR 4
+#define WAM_VERSION_MINOR 5
 #define WAM_VERSION_PATCH 0
-#define WAM_VERSION       "1.4.0" // the three numbers above (release.ps1 checks they agree)
+#define WAM_VERSION       "1.5.0" // the three numbers above (release.ps1 checks they agree)
 
 #define WAM_PUBLIC_URL    "https://github.com/davidsama/Wam" // releases and issues (Settings > About)

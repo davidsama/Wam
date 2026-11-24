@@ -490,11 +490,8 @@ static void test_wago(Arena *a)
     CHECK(key_looks_valid(str8_lit("$2a$10$abcdefghijklmnopqrstuv./ABCDEFGHIJKLMNOPQRSTUVWXYZ012"))); // CurseForge's
     CHECK(!key_looks_valid(str8_lit("0123456789abcdefghijklmnop\r\nX-Other: 1")));                    // no header injection
 
-    // A refused CurseForge key is named: the user's, or the built-in one.
-    String8 refused = cf_rejected_error(str8_lit("not the built-in one"));
-    CHECK(str8_find(refused, 0, str8_lit("your API key"), 0) < refused.size);
-    refused = cf_rejected_error(cf_builtin_key(a));
-    CHECK(str8_find(refused, 0, str8_lit("built into this wam"), 0) < refused.size);
+    // A refused CurseForge key: says whose it is and where to change it.
+    CHECK(str8_find(cf_rejected_error(), 0, str8_lit("your API key"), 0) < cf_rejected_error().size);
 
     // Support links: known sites by host, https only, no duplicates.
     CHECK(str8_match(support_site(str8_lit("https://www.patreon.com/x")), str8_lit("Patreon"), 0));

@@ -15,20 +15,23 @@ static void status_tick(void) { wm_request_frame(); }
 // "69 addons installed in Retail · 3 updates ready · checked 2 min ago"
 static String8 status_summary(Arena *a, Snapshot *snap)
 {
-    U64 n = 0, updates = 0;
+    U64 n = 0, updates = 0, cf = 0;
     for (U64 i = 0; i < snap->row_count; i += 1) {
         Row *r = &snap->rows[i];
         if (row_hidden(r->key)) continue; // being removed
         n += 1;
         updates += r->update && !r->pinned;
+        cf += id_is(r->key, "cf:");
     }
     U64 checked = app.checked[snap->flavor];
     String8List l = { 0 };
     str8_list_push(a, &l, n ? str8_pushf(a, "%llu addon%s installed in %s", n, n == 1 ? "" : "s", wow_flavors[snap->flavor].label)
                             : str8_pushf(a, "No addons installed in %s", wow_flavors[snap->flavor].label));
     if (updates) str8_list_push(a, &l, str8_pushf(a, "%llu update%s ready", updates, updates == 1 ? "" : "s"));
-    else if (n && checked) str8_list_push(a, &l, str8_lit("no updates found"));
+    else if (n && checked && (app.cf_key[0] || !cf)) str8_list_push(a, &l, str8_lit("no updates found"));
     if (checked) str8_list_push(a, &l, str8_pushf(a, "checked %.*s", S8F(fmt_ago(a, checked))));
+    if (!app.cf_key[0]) str8_list_push(a, &l, cf ? str8_pushf(a, "%llu CurseForge addon%s not checked: add your API key in Settings", cf, cf == 1 ? "" : "s")
+                                                 : str8_lit("CurseForge is off: add your API key in Settings"));
     return str8_list_join(a, &l, str8_lit("  \xC2\xB7  "));
 }
 
@@ -319,7 +322,7 @@ static B32 app_frame(void)
     if (old && !is_error && !app.pending && !app.waiting_count) status = str8(0, 0);
     B32 summary = !status.size && snap;
     if (summary) status = status_summary(fa, snap);
-    if (!app.cf_key[0] && !app.wago_key[0] && !status_text[0] && !snap) status = str8_lit("CurseForge unavailable in this build; GitHub, WoWInterface and Wago (with your key) work");
+    if (!app.cf_key[0] && !app.wago_key[0] && !status_text[0] && !snap) status = str8_lit("CurseForge and Wago need your own API keys (Settings); GitHub, WoWInterface and Tukui work without");
     F32 left = 20 * s;
     if (app.pending) {
         animating |= ui_spinner(left + 6 * s, sy + ui.font.caption->line_height * 0.5f, 7 * s); // working on it

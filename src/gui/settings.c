@@ -124,7 +124,7 @@ static void settings_cf_checked(CfKeyCheck *c)
     os_free(c);
 }
 
-// Removes the saved key: back to the one built into this wam, if any.
+// Removes the saved key.
 static void settings_remove_cf(void)
 {
     app.cf_check += 1; // an answer on its way doesn't bring one back
@@ -135,7 +135,7 @@ static void settings_remove_cf(void)
     CfKeySource source;
     String8 key = cf_api_key(t.arena, &source);
     settings_use_cf_key(key, source);
-    settings_cf_note(key.size ? "Removed your key. Using the one built into wam." : "Removed the saved key", 0);
+    settings_cf_note("Removed the saved key", 0);
     scratch_end(t);
 }
 
@@ -297,9 +297,7 @@ static void draw_settings(void)
 
     //- CurseForge
     y = settings_heading(x, y, w, "CurseForge",
-                         wam_cf_key_len ? "wam comes with a key, so this is optional: your own is used instead when you add one, "
-                                               "e.g. if the built-in one stops working. Keys come from console.curseforge.com."
-                                             : "This build has no CurseForge key. Add your own, from console.curseforge.com.");
+                         "Finding, installing and updating CurseForge addons needs your own API key, from console.curseforge.com.");
     if (app.cf_source == CF_KEY_ENV) {
         f_draw_text(ui.font.normal, x, y, str8_lit("Set by the CURSEFORGE_API_KEY environment variable"), C_GREEN, w);
         y += ui.font.normal->line_height + 4 * s;
@@ -312,7 +310,6 @@ static void draw_settings(void)
         String8 state = app.cf_checking ? str8_lit("Checking the key with CurseForge...")
                       : app.cf_note[0] ? str8_cstring(app.cf_note)
                       : saved ? str8_lit("\xE2\x9C\x93 Using your key, encrypted for your Windows user")
-                      : app.cf_key[0] ? str8_lit("Using the key built into wam. Nothing to set up.")
                       : str8_lit("No key saved: CurseForge addons can't be found, installed or updated");
         V4 color = app.cf_checking ? C_DIM : app.cf_note[0] ? (app.cf_note_error ? C_ERROR : C_GREEN) : saved ? C_GREEN : C_FAINT;
         f_draw_text(ui.font.caption, x, y, state, color, w);

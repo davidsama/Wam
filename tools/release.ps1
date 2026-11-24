@@ -62,9 +62,6 @@ if ($why) {
 & git rev-parse -q --verify "refs/tags/$tag" *> $null
 if ($LASTEXITCODE -eq 0) { Fail "tag $tag already exists" }
 
-$keyFile = Join-Path $root 'cf_key.txt'
-if (-not (Test-Path $keyFile) -or -not (Get-Content -Raw $keyFile).Trim()) { Fail 'cf_key.txt is missing or empty: a release without the CurseForge key has no CurseForge' }
-
 $changes = Get-Content -Raw (Join-Path $root 'CHANGES.md')
 $m = [regex]::Match($changes, "(?ms)^## $([regex]::Escape($Version))\b[^\r\n]*\r?\n(.*?)(?=^## |\z)")
 if (-not $m.Success -or -not $m.Groups[1].Value.Trim()) { Fail "CHANGES.md has no '## $Version' section with notes" }
@@ -91,12 +88,18 @@ Copy-Item (Join-Path $root 'THIRD_PARTY_NOTICES.md') (Join-Path $stage 'THIRD_PA
 Step 'checking the files'
 if (Get-ChildItem $stage -Filter *.pdb) { Fail 'a .pdb ended up in the release' }
 $latin1 = [Text.Encoding]::GetEncoding(28591)   # bytes as chars, one to one, for searching binaries
-$key = (Get-Content -Raw $keyFile).Trim()
-$forbidden = @(
-    @{ what = 'the build folder path'; text = $root },
-    @{ what = 'the plain CurseForge key'; text = $key },
-    @{ what = 'the plain CurseForge key (UTF-16)'; text = $latin1.GetString([Text.Encoding]::Unicode.GetBytes($key)) }
-)
+$forbidden = @(@{ what = 'the build folder path'; text = $root })
+# A release has no CurseForge key: not the one in cf_key.txt (a leftover, or kept for testing), plain or
+# XORed the way wam up to 1.4.0 carried it.
+$keyFile = Join-Path $root 'cf_key.txt'
+$key = if (Test-Path $keyFile) { "$(Get-Content -Raw $keyFile)".Trim() } else { '' }
+if ($key) {
+    $i = 0
+    $xored = [byte[]]@(foreach ($b in [Text.Encoding]::UTF8.GetBytes($key)) { $b -bxor ((0x5A + $i * 7) -band 0xFF); $i++ })
+    $forbidden += @{ what = 'the CurseForge key'; text = $key }
+    $forbidden += @{ what = 'the CurseForge key (UTF-16)'; text = $latin1.GetString([Text.Encoding]::Unicode.GetBytes($key)) }
+    $forbidden += @{ what = 'the CurseForge key (XORed)'; text = $latin1.GetString($xored) }
+}
 # This PC's own git name (the global one: a repository may use a public name, which wam.exe names
 # on purpose as its author), so a real name never ships inside the exe.
 $gitName = (& git.exe config --global --get user.name)
@@ -118,7 +121,7 @@ foreach ($e in $exes) {
     $pv = (Get-Item (Join-Path $stage $e)).VersionInfo.ProductVersion
     if ($pv -ne $Version) { Fail "$e says it's version '$pv', not $Version (its version resource)" }
 }
-Write-Host "no .pdb, no build paths, no plain key, no git user name; wam.exe is $Version"
+Write-Host "no .pdb, no build paths, no CurseForge key, no git user name; wam.exe is $Version"
 
 $sums = foreach ($e in $exes) { '{0}  {1}' -f (Get-FileHash -Algorithm SHA256 (Join-Path $stage $e)).Hash.ToLower(), $e }
 Set-Content -Path (Join-Path $stage 'SHA256SUMS.txt') -Value $sums -Encoding ascii

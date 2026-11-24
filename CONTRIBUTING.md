@@ -34,7 +34,6 @@ and runs `vcvars64.bat` (x64), staying in the current folder; copy it to a folde
 have it everywhere. In cmd it sets up that window. In PowerShell, which can't take a `.bat`'s
 environment, it starts a set-up PowerShell in the same window, its prompt starting with `[vs]`;
 `exit` goes back. `vsenv --here` only sets up the cmd it runs in (what `tools\release.ps1` uses).
-Without a `cf_key.txt` the build works the same; only CurseForge needs a key (see below).
 
 Produces `build\wam.exe`. Needs VS 2022 / Build Tools. The
 first build fetches Microsoft's WebView2 SDK header and static loader (`tools\fetch_webview2.ps1`,
@@ -69,10 +68,10 @@ powershell -ExecutionPolicy Bypass -File tools\release.ps1 -DryRun     build, ch
 powershell -ExecutionPolicy Bypass -File tools\release.ps1             publish
 ```
 
-A release needs a clean `main` that's pushed, `cf_key.txt`, and the changelog section. `-Version
+A release needs a clean `main` that's pushed and the changelog section. `-Version
 1.2.3`, if given, must match `version.h`. The script runs the tests and a release build, stages
 `wam.exe`, `SHA256SUMS.txt` and `THIRD_PARTY_NOTICES.md` in `build\release\<version>`, and refuses if a `.pdb`, this folder's
-path, the plain CurseForge key or this PC's git user name is in it, or if its version resource says
+path, a CurseForge key from `cf_key.txt` (if you have one) or this PC's git user name is in it, or if its version resource says
 another version (`/PDBALTPATH` keeps the build path out of the exe). It then creates the GitHub
 release `<version>` (no "v", like 1.0.0) on the commit it was built from, with the hashes in its
 notes. The repository is the `origin` remote's (`-Repo owner/name` or `WAM_REPO` override it).
@@ -133,18 +132,11 @@ CurseForge), and checks them for updates. wam follows Wago's stable channel.
 
 ## CurseForge key
 
-Users never need a key if the build embeds one:
-
-1. Apply for a key for this app at https://console.curseforge.com.
-2. Put it in `cf_key.txt` in the repo root (gitignored), then `build.bat release`.
-   The build prints `embedded CurseForge key (N chars)`.
-
-`tools\gen_key.ps1` XORs the key into `build\cf_key.h`, so it isn't a plain string in the exe.
-That only deters casual extraction. If the key is ever abused, CurseForge can revoke it; the
-robust fix is a small proxy server that holds the key. A user's own key, pasted in **Settings**, is
-used instead: wam tries it with one request first and doesn't save one CurseForge rejects. It's stored
+wam comes without a CurseForge key (up to 1.4.0 releases had one embedded): users add their own, pasted in
+**Settings**. wam tries it with one request first and doesn't save one CurseForge rejects. It's stored
 in `%APPDATA%\wam\curseforge.key` like the Wago key (DPAPI). The `CURSEFORGE_API_KEY` environment
-variable overrides both. A rejected key never makes wam fall back to another one silently.
+variable overrides it. Without a key wam doesn't ask CurseForge anything: its installed addons aren't
+checked (the status line says how many), and Get addons lists the other sources.
 
 Downloads from `edge.forgecdn.net` carry the key too (`x-api-key`): CurseForge announced it will be
 required. That host redirects, so wam follows its redirects by hand and sends the key to that host only.
@@ -152,8 +144,7 @@ required. That host redirects, so wam follows its redirects by hand and sends th
 **Rate limits and a rejected key**: when CurseForge or Wago answers 429 (too many requests), wam
 pauses that API for its `Retry-After` (else a minute, kept within 5 s to 5 min); requests during the
 pause fail at once with a message saying how long, without touching the network, so wam never keeps
-knocking. If CurseForge rejects the embedded key (revoked), wam says so and points to
-**Settings** for the user's own key; a rejected user key is named as theirs. Every request
+knocking. If CurseForge rejects the key, wam says so and points to **Settings**. Every request
 identifies itself with the user agent `wam/<version> (WoW addon manager)`.
 
 **Finding WoW**: `WAM_WOW_DIR` if set, else the folder you picked last (`%APPDATA%\wam\settings.json`), else Windows' list of installed programs (Battle.net records WoW's folder there), else `World of Warcraft` in the usual places on each local drive. Any folder inside an install (a flavor folder, `Interface`, `AddOns`) is accepted and resolved to the install's root.
@@ -168,7 +159,7 @@ identifies itself with the user agent `wam/<version> (WoW addon manager)`.
 - **Status line**: what wam is doing or just did, for 12 to 27 seconds after it's done (errors stay until the next message); otherwise how many addons are installed, how many updates are ready and when wam last checked. Hover that for the AddOns folder. Settings can add frame and startup times (`showPerformance` in `settings.json`).
 - **Title bar**: the header is the window's title bar (Windows' own is removed; the frame, shadow, snapping and Windows 11's snap layouts over maximize stay). Its empty parts drag the window, double-click maximizes, and minimize, maximize and close are at its right end. When the window is narrow it drops the name, then the game version, then shrinks the install button to a folder icon.
 - **Which install**: the button at the top right shows the World of Warcraft folder in use; click it to switch to another install wam found or browse for one. The choice is remembered. If wam finds none, the window offers the folder picker.
-- **Settings**: the cog next to it (or Ctrl+,) opens a popup in the middle of the window: the Wago API key (paste it and press Enter or Save; it's never shown, and stored encrypted for your Windows user; Remove deletes it), the same for your own CurseForge key (optional; tried before it's saved), the World of Warcraft folder (Change...), the theme and whether the status line shows performance numbers, and buttons that open wam's settings, caches and settings-backup folders. Esc, ✕ or a click beside it closes it.
+- **Settings**: the cog next to it (or Ctrl+,) opens a popup in the middle of the window: the Wago API key (paste it and press Enter or Save; it's never shown, and stored encrypted for your Windows user; Remove deletes it), the same for your own CurseForge key (tried before it's saved), the World of Warcraft folder (Change...), the theme and whether the status line shows performance numbers, and buttons that open wam's settings, caches and settings-backup folders. Esc, ✕ or a click beside it closes it.
 - **Installed**: tracked addons (with Update when a newer file exists) and untracked folders, in rows that look like Get addons': a picture, then the name, the addon's summary (or its `.toc` notes, or its folders), and a faint line with author · version · game version · sources. Pictures and summaries come from the catalog, found under the addon's tracked id or the ids its `.toc` names (`X-Curse-Project-ID`, `X-WoWI-ID`, `X-Wago-ID`); installed CurseForge addons the catalog doesn't have are fetched when it loads (one request) and cached with it; GitHub addons outside it show their owner's GitHub picture. An available update shows as a green "→ new version" after the name. Removed folders go to the Recycle Bin.
 - **Source links**: a row's faint line ends in where wam installs the addon from (a little brighter: CurseForge, Wago, WoWInterface or GitHub) and the other sites its `.toc` says it's published on (`X-Curse-Project-ID`, `X-Wago-ID`, `X-WoWI-ID`). Click one to open the addon's page in your browser. The same in Get addons.
 - **Checkboxes**: tick rows (or click their names; Ctrl+A for all) to Update or Remove them together.

@@ -1,9 +1,11 @@
 # Changes
 
-## Unreleased
+## 1.5.0
 
-- **Your own CurseForge key**: paste it in Settings, no environment variable needed. wam still comes with
-  a key, so this is optional. It's tried before it's saved, and kept encrypted for your Windows user.
+- **CurseForge now needs your own API key**: wam no longer comes with one. Get yours at
+  console.curseforge.com and paste it in Settings; it's tried before it's saved, and kept encrypted for your
+  Windows user. Without it, your CurseForge addons stay installed but aren't checked for updates, and
+  Get addons doesn't list CurseForge. The other sources work as before.
 - **CurseForge downloads** send the API key, which CurseForge has announced it will require.
 - **Settings scrolls** when the window is too low to show it all.
 - **Support an addon's author**: a Support button near the top of the details when the addon's page links
@@ -11,6 +13,7 @@
   addons link to their page too, which may have a Donate button.
 - **Links that did nothing**: details links listed as `http://` (such as Donate on ElvUI and Tukui) open
   again, over https.
+- **The details stay still** when an addon's version and favorites arrive a moment after the rest.
 
 ## 1.4.0
 

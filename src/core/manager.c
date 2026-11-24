@@ -185,8 +185,7 @@ static B32 folder_name_is_safe(String8 f)
 static B32 mgr_require_key(Mgr *m)
 {
     if (m->api_key.size) return 1;
-    return mgr_fail(m, "CurseForge needs an API key, and this build doesn't include one. Add your own in Settings, "
-                       "or install from GitHub / WoWInterface instead.");
+    return mgr_fail(m, "CurseForge needs your own API key: add it in Settings, or install from GitHub / WoWInterface instead.");
 }
 
 static B32 mgr_require_wago(Mgr *m)

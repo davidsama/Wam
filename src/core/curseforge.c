@@ -1,14 +1,11 @@
 // curseforge.c - CurseForge API calls.
 //
 // The official API (https://docs.curseforge.com) needs an API key in the
-// `x-api-key` header. Release builds embed the app's key (see tools\gen_key.ps1). The user's own
-// key, saved in Settings, is used instead when there is one, and the CURSEFORGE_API_KEY environment
-// variable overrides both.
+// `x-api-key` header: the user's own, saved in Settings (the CURSEFORGE_API_KEY environment variable
+// overrides it). wam comes without one.
 //
 // Files whose `downloadUrl` is null (the author disabled third-party
 // distribution) are never fetched; the user is pointed to the website instead.
-
-#include "cf_key.h"
 
 #define CF_HOST     "api.curseforge.com"
 #define CF_CDN_HOST "edge.forgecdn.net" // where downloadUrl points; it takes the key too
@@ -17,40 +14,25 @@
 
 static HTTP_Pause cf_pause;  // CurseForge said 429
 
-typedef enum CfKeySource { CF_KEY_NONE, CF_KEY_BUILTIN, CF_KEY_SAVED, CF_KEY_ENV } CfKeySource;
+typedef enum CfKeySource { CF_KEY_NONE, CF_KEY_SAVED, CF_KEY_ENV } CfKeySource;
 static B32 cf_key_env; // CURSEFORGE_API_KEY is set (read once, at startup)
 
-// The key embedded at build time; empty without one.
-static String8 cf_builtin_key(Arena *a)
-{
-    U8 *key = push_array_nz(a, U8, wam_cf_key_len + 1);
-    for (U32 i = 0; i < wam_cf_key_len; i += 1) key[i] = wam_cf_key_obf[i] ^ (U8)((0x5A + i * 7) & 0xFF);
-    key[wam_cf_key_len] = 0;
-    return str8(key, wam_cf_key_len);
-}
-
-// The env var if set, else the saved key, else the embedded one, else empty.
+// The env var if set, else the saved key, else empty.
 static String8 cf_api_key(Arena *a, CfKeySource *source)
 {
     *source = CF_KEY_ENV;
     String8 key = str8_trim(os_get_env(a, "CURSEFORGE_API_KEY"));
     cf_key_env = key.size != 0;
     if (!key.size) { *source = CF_KEY_SAVED; key = key_load(a, CF_KEY_FILE); }
-    if (!key.size) { *source = CF_KEY_BUILTIN; key = cf_builtin_key(a); }
     if (!key.size) *source = CF_KEY_NONE;
     return key;
 }
 
 // What to tell the user when CurseForge refuses this key.
-static String8 cf_rejected_error(String8 api_key)
+static String8 cf_rejected_error(void)
 {
-    Temp scratch = scratch_begin(0);
-    B32 builtin = str8_match(api_key, cf_builtin_key(scratch.arena), 0);
-    scratch_end(scratch);
-    return builtin ? str8_lit("CurseForge rejected the API key built into this wam. A newer wam may come with a new one; "
-                              "meanwhile, you can use your own CurseForge API key (add it in Settings)")
-         : cf_key_env ? str8_lit("CurseForge rejected your API key (CURSEFORGE_API_KEY)")
-         : str8_lit("CurseForge rejected your API key (replace or remove it in Settings)");
+    return cf_key_env ? str8_lit("CurseForge rejected your API key (CURSEFORGE_API_KEY)")
+                      : str8_lit("CurseForge rejected your API key (replace or remove it in Settings)");
 }
 
 static HTTP_Result cf_request(Arena *a, String8 api_key, char *method, String8 path, String8 body)
@@ -80,7 +62,7 @@ static HTTP_Result cf_call(Arena *a, String8 api_key, char *method, String8 path
     }
     HTTP_Result r = cf_request(a, api_key, method, path, body);
     if (r.status == 403 || r.status == 401) {
-        r.error = cf_rejected_error(api_key);
+        r.error = cf_rejected_error();
     } else if (r.status == 429) {
         http_pause_start(&cf_pause, r.retry_after);
         r.error = str8_pushf(a, "CurseForge asked wam to slow down; it waits %u s before asking again", http_pause_left(&cf_pause));
@@ -126,7 +108,7 @@ static HTTP_Result cf_download(Arena *a, String8 api_key, String8 url, HTTP_Prog
         if (!api_key.size || !cf_cdn_wants_key(url)) return http_get_url(a, url, str8(0, 0), progress, user);
         String8 location = { 0 };
         r = http_get_url_ex(a, url, str8_pushf(a, "x-api-key: %.*s\r\n", S8F(api_key)), progress, user, &location);
-        if (r.status == 401) r.error = cf_rejected_error(api_key);
+        if (r.status == 401) r.error = cf_rejected_error();
         if (!location.size) return r;
         url = cf_redirect_url(a, location);
         if (!url.size || hop == 5) { r.error = str8_lit("bad redirect"); return r; }
