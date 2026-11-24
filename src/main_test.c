@@ -20,6 +20,7 @@
 #include "core/addons.c"
 #include "core/zip.c"
 #include "core/http.c"
+#include "core/keys.c"
 #include "core/curseforge.c"
 #include "core/sources.c"
 #include "core/wago.c"
@@ -484,8 +485,29 @@ static void test_wago(Arena *a)
     CHECK(rf.file_id == 1714564800 && str8_match(rf.url, str8_lit("https://x/dl?f=1&token=k%2By"), 0));
     RemoteFile none = wago_file_from_scan(a, str8_lit("k"), item->next);
     CHECK(!none.ok && none.error.size);
-    CHECK(wago_key_looks_valid(str8_lit("0123456789abcdefghijklmnop")) && !wago_key_looks_valid(str8_lit("short")));
-    CHECK(!wago_key_looks_valid(str8_lit("0123456789abcdef ghijklmnop")));
+    CHECK(key_looks_valid(str8_lit("0123456789abcdefghijklmnop")) && !key_looks_valid(str8_lit("short")));
+    CHECK(!key_looks_valid(str8_lit("0123456789abcdef ghijklmnop")));
+    CHECK(key_looks_valid(str8_lit("$2a$10$abcdefghijklmnopqrstuv./ABCDEFGHIJKLMNOPQRSTUVWXYZ012"))); // CurseForge's
+    CHECK(!key_looks_valid(str8_lit("0123456789abcdefghijklmnop\r\nX-Other: 1")));                    // no header injection
+
+    // A refused CurseForge key is named: the user's, or the built-in one.
+    String8 refused = cf_rejected_error(str8_lit("not the built-in one"));
+    CHECK(str8_find(refused, 0, str8_lit("your API key"), 0) < refused.size);
+    refused = cf_rejected_error(cf_builtin_key(a));
+    CHECK(str8_find(refused, 0, str8_lit("built into this wam"), 0) < refused.size);
+
+    // Downloads: the key goes only to the CDN host that asks for it, on HTTPS's own port.
+    CHECK(cf_cdn_wants_key(str8_lit("https://edge.forgecdn.net/files/1/2/a.zip")));
+    CHECK(cf_cdn_wants_key(str8_lit("https://EDGE.forgecdn.net/files/1/2/a b.zip")));
+    CHECK(!cf_cdn_wants_key(str8_lit("https://mediafilez.forgecdn.net/files/1/2/a.zip")));
+    CHECK(!cf_cdn_wants_key(str8_lit("https://edge.forgecdn.net.example.com/a.zip")));
+    CHECK(!cf_cdn_wants_key(str8_lit("https://edge.forgecdn.net@example.com/a.zip")));
+    CHECK(!cf_cdn_wants_key(str8_lit("https://edge.forgecdn.net:8443/a.zip")));
+    CHECK(!cf_cdn_wants_key(str8_lit("http://edge.forgecdn.net/a.zip")));
+    CHECK(!cf_cdn_wants_key(str8_lit("https://github.com/o/r/a.zip")) && !cf_cdn_wants_key(str8(0, 0)));
+    CHECK(str8_match(cf_redirect_url(a, str8_lit("/files/x.zip")), str8_lit("https://edge.forgecdn.net/files/x.zip"), 0));
+    CHECK(str8_match(cf_redirect_url(a, str8_lit("https://mediafilez.forgecdn.net/x.zip")), str8_lit("https://mediafilez.forgecdn.net/x.zip"), 0));
+    CHECK(!cf_redirect_url(a, str8_lit("//example.com/x")).size && !cf_redirect_url(a, str8_lit("http://example.com/x")).size);
 
     // The key file round-trips through DPAPI.
     String8 blob = os_protect(a, str8_lit("secret-key-value"));

@@ -16,7 +16,7 @@ What wam already does, so you know what's intended:
   links, passwords or extraction errors are refused, and nothing is moved into AddOns until
   everything unpacked cleanly.
 - Downloads and API calls use HTTPS only; links wam opens in your browser must be `https://`.
-- The Wago key is stored encrypted for your Windows user (DPAPI); the CurseForge key built into
+- Your own Wago and CurseForge keys are stored encrypted for your Windows user (DPAPI); the CurseForge key built into
   releases is obscured, not secret, and CurseForge can revoke it.
 - Removed addons go to the Recycle Bin; links (junctions) inside AddOns are removed, never followed.
 

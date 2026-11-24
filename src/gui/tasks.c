@@ -161,7 +161,8 @@ static void run_task(Task *t)
         arena_release(a);
         return;
     }
-    Mgr *m = mgr_open(a, addons_dir, app.api_key);
+    Mgr *m = mgr_open(a, addons_dir, str8_cstring(t->cf_key));
+    os_secure_zero(t->cf_key, sizeof(t->cf_key));
     m->wago_key = str8_copy(a, str8_cstring(t->wago_key));
     os_secure_zero(t->wago_key, sizeof(t->wago_key));
     m->status = worker_status_cb;

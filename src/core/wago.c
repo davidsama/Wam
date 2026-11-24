@@ -22,19 +22,7 @@
 
 //- Key
 
-static String8 wago_key_path(Arena *a)
-{
-    String8 appdata = os_get_env(a, "APPDATA");
-    if (!appdata.size) return str8(0, 0);
-    return path_join(a, path_join(a, appdata, str8_lit("wam")), str8_lit("wago.key"));
-}
-
-static B32 wago_key_looks_valid(String8 key)
-{
-    if (key.size <= 20 || key.size > 512) return 0;
-    for (U64 i = 0; i < key.size; i += 1) if (key.str[i] <= ' ' || key.str[i] > '~') return 0;
-    return 1;
-}
+#define WAGO_KEY_FILE "wago.key"
 
 typedef enum WagoKeySource { WAGO_KEY_NONE, WAGO_KEY_ENV, WAGO_KEY_SAVED } WagoKeySource;
 
@@ -45,8 +33,7 @@ static String8 wago_api_key_ex(Arena *a, WagoKeySource *source)
     String8 key = str8_trim(os_get_env(a, "WAGO_API_KEY"));
     if (key.size) src = WAGO_KEY_ENV;
     else {
-        String8 path = wago_key_path(a);
-        key = path.size ? str8_trim(os_unprotect(a, os_read_file(a, path))) : str8(0, 0);
+        key = key_load(a, WAGO_KEY_FILE);
         if (key.size) src = WAGO_KEY_SAVED;
     }
     if (source) *source = src;
@@ -54,24 +41,6 @@ static String8 wago_api_key_ex(Arena *a, WagoKeySource *source)
 }
 
 static String8 wago_api_key(Arena *a) { return wago_api_key_ex(a, 0); }
-
-// Saves the key (encrypted for this Windows user); an empty key deletes it.
-static B32 wago_save_key(String8 key)
-{
-    Temp scratch = scratch_begin(0);
-    String8 path = wago_key_path(scratch.arena);
-    B32 ok = 0;
-    if (path.size) {
-        if (!key.size) {
-            ok = !os_file_exists(path) || DeleteFileW((WCHAR *)os_path16(scratch.arena, path).str);
-        } else {
-            String8 blob = os_protect(scratch.arena, key);
-            ok = blob.size && os_make_dirs(path_dirname(path)) && os_write_file(path, blob);
-        }
-    }
-    scratch_end(scratch);
-    return ok;
-}
 
 //- API
 

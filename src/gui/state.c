@@ -92,14 +92,14 @@ typedef enum TaskKind { TASK_REFRESH, TASK_SYNC, TASK_INSTALL, TASK_INSTALL_FILE
 // TASK_INSTALL_DOWNLOADED text: path, id, file id, name, version, website - one per line (see main_gui.c).
 // text: what the user pasted (install), an archive path (zip/rar/7z), a query (search), or for update/remove
 // row keys (addon ids or untracked folder names) separated by '\n'; empty update = all.
-#define WAGO_KEY_MAX 600
+#define API_KEY_MAX 600
 typedef struct Task {
     TaskKind kind; int flavor; U32 gen; S32 seq; char wow_root[1024]; B32 force;
     U32 id;               // queued tasks: numbered in order; on_task_done says which one finished
     U64 queued_us;        // when it was queued (tasks.log: how long it waited)
     int sort; U64 index;  // searches: BrowseSort and page start,
     S64 category;         // and the CurseForge category (0: all)
-    char text[8192]; char wago_key[WAGO_KEY_MAX]; // the key as of queuing
+    char text[8192]; char cf_key[API_KEY_MAX], wago_key[API_KEY_MAX]; // the keys as of queuing
 } Task;
 
 #define TASK_QUEUE 64
@@ -188,8 +188,8 @@ typedef struct App {
     String8 wow_root;       // UI thread only; each task gets a copy
     U32 root_gen;           // bumped when the user picks another install: results from the old one are dropped
     Rect root_btn;          // where the "choose install" menu drops down from
-    String8 api_key;        // read-only after startup (worker reads it)
-    char wago_key[WAGO_KEY_MAX]; // UI thread only; copied into each task
+    char cf_key[API_KEY_MAX], wago_key[API_KEY_MAX]; // UI thread only; copied into each task
+    CfKeySource cf_source;  // whose CurseForge key it is (CF_KEY_ENV's the settings can't change)
     B32 wago_from_env;      // the Wago key is WAGO_API_KEY's (the settings can't change it)
     B32 flavor_exists[FLAVOR_COUNT];
     int flavor;
@@ -283,7 +283,13 @@ typedef struct App {
     // The settings popup (settings.c)
     B32 settings_open, settings_fresh; // fresh: opened this frame (by a click it mustn't see)
     UI_TextBuf wago_entry;  // a Wago key being typed there (never drawn)
-    char settings_note[160]; B32 settings_note_error; // what the last save did
+    UI_TextBuf cf_entry;    // the same for a CurseForge key
+    B32 settings_in_cf;     // typing goes to the CurseForge field, else the Wago one
+    char settings_note[160]; B32 settings_note_error; // what the last save did (Wago)
+    char cf_note[160]; B32 cf_note_error;             // (CurseForge)
+    U32 cf_check;           // numbers the checks of a typed CurseForge key: an older one's answer is dropped
+    B32 cf_checking;
+    UI_Scroll settings_scroll;
     F32 settings_h;         // the panel's height, measured by the last frame
     F64 init_ms;
     B32 show_perf;          // the status line also shows frame and startup times (settings.json)
@@ -299,6 +305,7 @@ static void on_catalog(U64 param, void *cs);           // CatalogSnap: from the 
 static void on_details(U64 param, void *ds);           // DetailSnap
 static void on_changes(U64 param, void *cs);           // ChangesSnap
 static void on_downloads(U64 param, void *ds);         // DownloadsSnap
+static void on_cf_key_checked(U64 param, void *check); // CfKeyCheck (os_alloc): a typed CurseForge key was tried (settings.c)
 static void on_pending(U64 param, void *pl);           // PendingList (os_alloc): CurseForge files to fetch through their page
 static void on_status(U64 param, void *ptr);           // the status line or the progress changed: a frame
 static void on_task_done(U64 id, void *ptr);           // a queued task finished
@@ -330,6 +337,7 @@ static Task make_task(TaskKind kind, String8 text, B32 force, int flavor)
     if (app.wow_root.size < sizeof(t.wow_root)) memcpy(t.wow_root, app.wow_root.str, app.wow_root.size);
     U64 n = Min(text.size, sizeof(t.text) - 1);
     if (n) memcpy(t.text, text.str, n);
+    memcpy(t.cf_key, app.cf_key, sizeof(t.cf_key));
     memcpy(t.wago_key, app.wago_key, sizeof(t.wago_key));
     return t;
 }

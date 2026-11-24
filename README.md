@@ -127,7 +127,7 @@ statistics and has no telemetry. What it keeps on your PC:
 
 | Where | What |
 |---|---|
-| `%APPDATA%\wam` | settings (chosen WoW folder, theme, window layout), the Wago key (encrypted for your Windows user), downloads already installed |
+| `%APPDATA%\wam` | settings (chosen WoW folder, theme, window layout), your own Wago and CurseForge keys, if you added them (encrypted for your Windows user), downloads already installed |
 | `%LOCALAPPDATA%\wam` | caches: the addon catalog, pictures, your addons' fingerprints, the download window's browser profile; `tasks.log`, how long each install, update or removal took (for reporting a slow moment) |
 | `<WoW>\<flavor>\Interface\wam.json` | which addons wam installed, and from where |
 | `<WoW>\<flavor>\WTF-Backup` | the settings backups |
@@ -155,7 +155,7 @@ build.bat test         builds and runs the unit tests
 CurseForge needs an API key, which the published releases have built in. It isn't in this
 repository: a build of your own works with every other source, and with CurseForge once you get your
 own key from the [CurseForge developer console](https://console.curseforge.com) (put it in
-`cf_key.txt` before building, or set `CURSEFORGE_API_KEY`). Please don't ship builds with the
+`cf_key.txt` before building, or paste it in Settings). Please don't ship builds with the
 release key extracted from wam.exe: it's tied to this app, and CurseForge can revoke it for everyone.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) explains how wam works, how the code is laid out, and how to

@@ -315,7 +315,8 @@ static void ui_text_paste(UI_TextBuf *t, String8 utf8);
 // Edits t with one event: typed text, Backspace, Ctrl+Backspace (clears), Ctrl+V (pastes).
 // Returns 1 if it used the event; Enter, Escape and the other keys are left to the caller.
 static B32  ui_text_edit(UI_TextBuf *t, WM_Event *e);
-// A one-line field: text (or one dot per character when masked) with a caret, or the hint when empty.
-static void ui_text_field(Rect r, UI_TextBuf *t, String8 hint, B32 masked, V4 border);
+// A one-line field: text (or one dot per character when masked), or the hint when empty; with a caret
+// when typing goes to it.
+static void ui_text_field(Rect r, UI_TextBuf *t, String8 hint, B32 masked, B32 caret, V4 border);
 
 #endif

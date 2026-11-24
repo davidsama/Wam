@@ -1,5 +1,12 @@
 # Changes
 
+## Unreleased
+
+- **Your own CurseForge key**: paste it in Settings, no environment variable needed. wam still comes with
+  a key, so this is optional. It's tried before it's saved, and kept encrypted for your Windows user.
+- **CurseForge downloads** send the API key, which CurseForge has announced it will require.
+- **Settings scrolls** when the window is too low to show it all.
+
 ## 1.4.0
 
 - **Descriptions and changelogs look right**: headings, bold and italic, lists, quotes, code, tables and

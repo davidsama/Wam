@@ -24,8 +24,10 @@ static HINTERNET http_get_session(void)
     return s;
 }
 
-static HTTP_Result http_request_ex(Arena *a, char *method, String8 host, U16 port, String8 path, String8 headers,
-                                   String8 body, HTTP_ProgressFunc *progress, void *user)
+// redirect (optional): redirects aren't followed; it gets where one points. (Followed ones may carry
+// the headers along, to whatever host that is.)
+static HTTP_Result http_request_full(Arena *a, char *method, String8 host, U16 port, String8 path, String8 headers,
+                                     String8 body, HTTP_ProgressFunc *progress, void *user, String8 *redirect)
 {
     HTTP_Result result = { 0 };
     Temp scratch = scratch_begin(a);
@@ -44,6 +46,13 @@ static HTTP_Result http_request_ex(Arena *a, char *method, String8 host, U16 por
                              WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
     if (!req) { result.error = str8_lit("could not open request"); goto done; }
 
+    if (redirect) {
+        DWORD no_redirects = WINHTTP_DISABLE_REDIRECTS;
+        if (!WinHttpSetOption(req, WINHTTP_OPTION_DISABLE_FEATURE, &no_redirects, sizeof(no_redirects))) {
+            result.error = str8_lit("could not open request");
+            goto done;
+        }
+    }
     if (!WinHttpSendRequest(req, headers16.size ? (WCHAR *)headers16.str : WINHTTP_NO_ADDITIONAL_HEADERS,
                             headers16.size ? (DWORD)-1L : 0,
                             body.size ? body.str : WINHTTP_NO_REQUEST_DATA, (DWORD)body.size, (DWORD)body.size, 0) ||
@@ -56,6 +65,15 @@ static HTTP_Result http_request_ex(Arena *a, char *method, String8 host, U16 por
     WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
                         &status, &size, WINHTTP_NO_HEADER_INDEX);
     result.status = status;
+    if (redirect && status >= 300 && status < 400) {
+        WCHAR loc[4096];
+        DWORD loc_bytes = sizeof(loc);
+        if (WinHttpQueryHeaders(req, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, loc, &loc_bytes, WINHTTP_NO_HEADER_INDEX)) {
+            *redirect = os_str8_from_16(a, (U16 *)loc, loc_bytes / sizeof(WCHAR));
+        }
+        result.error = str8_pushf(a, "HTTP %u", status);
+        goto done;
+    }
     if (status == 429 || status == 503) {
         DWORD retry = 0;
         size = sizeof(retry);
@@ -89,7 +107,12 @@ done:
     return result;
 }
 
-// GET a full URL. Plain http:// URLs are upgraded to https://.
+static HTTP_Result http_request_ex(Arena *a, char *method, String8 host, U16 port, String8 path, String8 headers,
+                                   String8 body, HTTP_ProgressFunc *progress, void *user)
+{
+    return http_request_full(a, method, host, port, path, headers, body, progress, user, 0);
+}
+
 // Percent-encodes what may not appear in a URL as is: spaces and other control characters, bytes
 // outside ASCII (UTF-8 file names), and " < > \ ^ ` { | }. Everything else, % included (already
 // encoded parts), stays. Returns url itself when there's nothing to encode. Sites hand out links
@@ -134,7 +157,8 @@ static void http_pause_start(HTTP_Pause *p, U32 retry_after)
     if (until > p->until_ms) InterlockedExchange64(&p->until_ms, until);
 }
 
-static HTTP_Result http_get_url(Arena *a, String8 url, String8 headers, HTTP_ProgressFunc *progress, void *user)
+// GET a full URL. Plain http:// URLs are upgraded to https://. redirect: see http_request_full.
+static HTTP_Result http_get_url_ex(Arena *a, String8 url, String8 headers, HTTP_ProgressFunc *progress, void *user, String8 *redirect)
 {
     HTTP_Result result = { 0 };
     Temp scratch = scratch_begin(a);
@@ -152,9 +176,14 @@ static HTTP_Result http_get_url(Arena *a, String8 url, String8 headers, HTTP_Pro
     }
     String8 host = os_str8_from_16(scratch.arena, (U16 *)uc.lpszHostName, uc.dwHostNameLength);
     String8 path = os_str8_from_16(scratch.arena, (U16 *)uc.lpszUrlPath, uc.dwUrlPathLength + uc.dwExtraInfoLength);
-    result = http_request_ex(a, "GET", host, uc.nPort, path, headers, str8(0, 0), progress, user);
+    result = http_request_full(a, "GET", host, uc.nPort, path, headers, str8(0, 0), progress, user, redirect);
     scratch_end(scratch);
     return result;
+}
+
+static HTTP_Result http_get_url(Arena *a, String8 url, String8 headers, HTTP_ProgressFunc *progress, void *user)
+{
+    return http_get_url_ex(a, url, headers, progress, user, 0);
 }
 
 static String8 url_encode(Arena *a, String8 s)

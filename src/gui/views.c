@@ -763,7 +763,7 @@ static void paging_sync(void)
     app.more_category = category;
     copy_cstr(app.more_query, sizeof(app.more_query), q);
     app.more_index = q.size || category ? 0 : sort_prefetched[sort]; // browsing it all starts after what the catalog prefetched
-    app.more_done = !app.api_key.size;
+    app.more_done = !app.cf_key[0];
     app.more_empty = 0;
     app.more_waiting = 0;
     if (again && !suggest_due_ms) { app.sugg_last_query[0] = 0; suggest_due_ms = os_now_ms(); wm_timer_start(suggest_timer, 1); }
@@ -1463,7 +1463,7 @@ static B32 draw_search(Rect area)
     V4 no_border = C_BG;
     no_border.w = 0;
     ui_text_field(rect(field.x0 + 26 * s, field.y0, field.x1, field.y1), &app.query,
-                  str8_lit("Filter by name, or paste a GitHub / WoWInterface / CurseForge / Wago link and press Enter"), 0, no_border);
+                  str8_lit("Filter by name, or paste a GitHub / WoWInterface / CurseForge / Wago link and press Enter"), 0, 1, no_border);
     if (app.query.len) r_rect(field, C_ACCENT_BG, 8 * s, ui_px(), 0.5f);
 
     // Left open for a long time: refresh the catalog once in the background.
@@ -1588,9 +1588,9 @@ static B32 draw_search(Rect area)
         if (loading && !app.cat.count) {
             ui_text_centered(ui.font.normal, rect(list.x0, cy, list.x1, cy + 24 * s), str8_lit("Loading the addon list..."), C_DIM);
             animating |= ui_loading_bar(rect(list.x0, list.y0, list.x1, list.y0 + 2 * s));
-        } else if (!app.api_key.size && !app.cat.count) {
+        } else if (!app.cf_key[0] && !app.cat.count) {
             ui_text_centered(ui.font.normal, rect(list.x0, cy, list.x1, cy + 24 * s),
-                               str8_lit("CurseForge search isn't available in this build (no API key)."), C_DIM);
+                               str8_lit("CurseForge search needs an API key, which this build doesn't include. Add yours in Settings."), C_DIM);
             ui_text_centered(ui.font.caption, rect(list.x0, cy + 28 * s, list.x1, cy + 48 * s),
                                str8_lit("Paste a link instead, e.g.  BigWigsMods/BigWigs   or   https://www.wowinterface.com/downloads/info5108-Clique.html"), C_FAINT);
         } else if (app.catalog_failed && !app.cat.count) {

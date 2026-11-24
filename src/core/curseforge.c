@@ -1,8 +1,9 @@
 // curseforge.c - CurseForge API calls.
 //
 // The official API (https://docs.curseforge.com) needs an API key in the
-// `x-api-key` header. Release builds embed the app's key (see tools\gen_key.ps1);
-// the CURSEFORGE_API_KEY environment variable overrides it.
+// `x-api-key` header. Release builds embed the app's key (see tools\gen_key.ps1). The user's own
+// key, saved in Settings, is used instead when there is one, and the CURSEFORGE_API_KEY environment
+// variable overrides both.
 //
 // Files whose `downloadUrl` is null (the author disabled third-party
 // distribution) are never fetched; the user is pointed to the website instead.
@@ -10,21 +11,62 @@
 #include "cf_key.h"
 
 #define CF_HOST     "api.curseforge.com"
+#define CF_CDN_HOST "edge.forgecdn.net" // where downloadUrl points; it takes the key too
 #define CF_GAME_WOW 1
+#define CF_KEY_FILE "curseforge.key"
 
-static B32 cf_key_is_users; // the key came from CURSEFORGE_API_KEY, not this build
 static HTTP_Pause cf_pause;  // CurseForge said 429
 
-// The env var if set, else the key embedded at build time, else empty.
-static String8 cf_api_key(Arena *a)
+typedef enum CfKeySource { CF_KEY_NONE, CF_KEY_BUILTIN, CF_KEY_SAVED, CF_KEY_ENV } CfKeySource;
+static B32 cf_key_env; // CURSEFORGE_API_KEY is set (read once, at startup)
+
+// The key embedded at build time; empty without one.
+static String8 cf_builtin_key(Arena *a)
 {
-    String8 env = os_get_env(a, "CURSEFORGE_API_KEY");
-    cf_key_is_users = env.size != 0;
-    if (env.size) return env;
     U8 *key = push_array_nz(a, U8, wam_cf_key_len + 1);
     for (U32 i = 0; i < wam_cf_key_len; i += 1) key[i] = wam_cf_key_obf[i] ^ (U8)((0x5A + i * 7) & 0xFF);
     key[wam_cf_key_len] = 0;
     return str8(key, wam_cf_key_len);
+}
+
+// The env var if set, else the saved key, else the embedded one, else empty.
+static String8 cf_api_key(Arena *a, CfKeySource *source)
+{
+    *source = CF_KEY_ENV;
+    String8 key = str8_trim(os_get_env(a, "CURSEFORGE_API_KEY"));
+    cf_key_env = key.size != 0;
+    if (!key.size) { *source = CF_KEY_SAVED; key = key_load(a, CF_KEY_FILE); }
+    if (!key.size) { *source = CF_KEY_BUILTIN; key = cf_builtin_key(a); }
+    if (!key.size) *source = CF_KEY_NONE;
+    return key;
+}
+
+// What to tell the user when CurseForge refuses this key.
+static String8 cf_rejected_error(String8 api_key)
+{
+    Temp scratch = scratch_begin(0);
+    B32 builtin = str8_match(api_key, cf_builtin_key(scratch.arena), 0);
+    scratch_end(scratch);
+    return builtin ? str8_lit("CurseForge rejected the API key built into this wam. A newer wam may come with a new one; "
+                              "meanwhile, you can use your own CurseForge API key (add it in Settings)")
+         : cf_key_env ? str8_lit("CurseForge rejected your API key (CURSEFORGE_API_KEY)")
+         : str8_lit("CurseForge rejected your API key (replace or remove it in Settings)");
+}
+
+static HTTP_Result cf_request(Arena *a, String8 api_key, char *method, String8 path, String8 body)
+{
+    Temp scratch = scratch_begin(a);
+    String8 headers = str8_pushf(scratch.arena, "x-api-key: %.*s\r\nAccept: application/json\r\nContent-Type: application/json\r\n", S8F(api_key));
+    HTTP_Result r = http_request_ex(a, method, str8_lit(CF_HOST), INTERNET_DEFAULT_HTTPS_PORT, path, headers, body, 0, 0);
+    scratch_end(scratch);
+    return r;
+}
+
+// Whether CurseForge takes a key the user is about to save: one small request. Not held up by a
+// pause, which was for the key used so far.
+static HTTP_Result cf_check_key(Arena *a, String8 api_key)
+{
+    return cf_request(a, api_key, "GET", str8_lit("/v1/games/1"), str8(0, 0));
 }
 
 static HTTP_Result cf_call(Arena *a, String8 api_key, char *method, String8 path, String8 body)
@@ -36,19 +78,59 @@ static HTTP_Result cf_call(Arena *a, String8 api_key, char *method, String8 path
         r.error = str8_pushf(a, "CurseForge asked wam to slow down; it waits %u s before asking again", paused);
         return r;
     }
-    Temp scratch = scratch_begin(a);
-    String8 headers = str8_pushf(scratch.arena, "x-api-key: %.*s\r\nAccept: application/json\r\nContent-Type: application/json\r\n", S8F(api_key));
-    HTTP_Result r = http_request_ex(a, method, str8_lit(CF_HOST), INTERNET_DEFAULT_HTTPS_PORT, path, headers, body, 0, 0);
+    HTTP_Result r = cf_request(a, api_key, method, path, body);
     if (r.status == 403 || r.status == 401) {
-        r.error = cf_key_is_users ? str8_lit("CurseForge rejected your API key (CURSEFORGE_API_KEY)")
-                : str8_lit("CurseForge rejected the API key built into this wam. A newer wam may come with a new one; "
-                           "meanwhile, your own CurseForge API key works when set in CURSEFORGE_API_KEY");
+        r.error = cf_rejected_error(api_key);
     } else if (r.status == 429) {
         http_pause_start(&cf_pause, r.retry_after);
         r.error = str8_pushf(a, "CurseForge asked wam to slow down; it waits %u s before asking again", http_pause_left(&cf_pause));
     }
-    scratch_end(scratch);
     return r;
+}
+
+//- Downloads
+//
+// CurseForge's CDN takes the key on downloads (announced to become required, with 401 without
+// one). It answers with a redirect to another host, so redirects are followed by hand: the key
+// goes only to CF_CDN_HOST, never along to where it points.
+
+static B32 cf_cdn_wants_key(String8 url)
+{
+    Temp scratch = scratch_begin(0);
+    String16 url16 = os_str16_from_8(scratch.arena, url_escape_unsafe(scratch.arena, url));
+    URL_COMPONENTSW uc = { sizeof(uc) };
+    uc.dwHostNameLength = (DWORD)-1;
+    B32 yes = 0;
+    if (url16.size && WinHttpCrackUrl((WCHAR *)url16.str, (DWORD)url16.size, 0, &uc) && uc.nScheme == INTERNET_SCHEME_HTTPS && uc.nPort == INTERNET_DEFAULT_HTTPS_PORT) {
+        yes = str8_match(os_str8_from_16(scratch.arena, (U16 *)uc.lpszHostName, uc.dwHostNameLength), str8_lit(CF_CDN_HOST), 1);
+    }
+    scratch_end(scratch);
+    return yes;
+}
+
+// A redirect's Location from CF_CDN_HOST as a full https URL; empty if it isn't one.
+static String8 cf_redirect_url(Arena *a, String8 location)
+{
+    if (str8_starts_with(location, str8_lit("https://"), 1)) return location;
+    if (str8_starts_with(location, str8_lit("/"), 0) && !str8_starts_with(location, str8_lit("//"), 0)) {
+        return str8_pushf(a, "https://" CF_CDN_HOST "%.*s", S8F(location));
+    }
+    return str8(0, 0);
+}
+
+// Downloads a file. A URL that isn't on CF_CDN_HOST (any other source's) is fetched without the key.
+static HTTP_Result cf_download(Arena *a, String8 api_key, String8 url, HTTP_ProgressFunc *progress, void *user)
+{
+    HTTP_Result r = { 0 };
+    for (int hop = 0;; hop += 1) {
+        if (!api_key.size || !cf_cdn_wants_key(url)) return http_get_url(a, url, str8(0, 0), progress, user);
+        String8 location = { 0 };
+        r = http_get_url_ex(a, url, str8_pushf(a, "x-api-key: %.*s\r\n", S8F(api_key)), progress, user, &location);
+        if (r.status == 401) r.error = cf_rejected_error(api_key);
+        if (!location.size) return r;
+        url = cf_redirect_url(a, location);
+        if (!url.size || hop == 5) { r.error = str8_lit("bad redirect"); return r; }
+    }
 }
 
 static String8 s64_json_array(Arena *a, char *key, S64 *values, U64 count)

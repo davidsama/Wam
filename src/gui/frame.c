@@ -319,7 +319,7 @@ static B32 app_frame(void)
     if (old && !is_error && !app.pending && !app.waiting_count) status = str8(0, 0);
     B32 summary = !status.size && snap;
     if (summary) status = status_summary(fa, snap);
-    if (!app.api_key.size && !app.wago_key[0] && !status_text[0] && !snap) status = str8_lit("CurseForge unavailable in this build; GitHub, WoWInterface and Wago (with your key) work");
+    if (!app.cf_key[0] && !app.wago_key[0] && !status_text[0] && !snap) status = str8_lit("CurseForge unavailable in this build; GitHub, WoWInterface and Wago (with your key) work");
     F32 left = 20 * s;
     if (app.pending) {
         animating |= ui_spinner(left + 6 * s, sy + ui.font.caption->line_height * 0.5f, 7 * s); // working on it

@@ -51,6 +51,7 @@
 #include "core/addons.c"
 #include "core/zip.c"
 #include "core/http.c"
+#include "core/keys.c"
 #include "core/curseforge.c"
 #include "core/sources.c"
 #include "core/wago.c"
@@ -380,6 +381,8 @@ static void on_downloads(U64 param, void *ptr)
     wm_request_frame();
 }
 
+static void on_cf_key_checked(U64 param, void *check) { (void)param; settings_cf_checked((CfKeyCheck *)check); wm_request_frame(); }
+
 static void on_pending(U64 param, void *ptr)
 {
     (void)param;
@@ -409,9 +412,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     if (argc > 1) app.wow_root = wow_normalize_root(app.arena, os_str8_from_16(app.arena, (U16 *)argv[1], wcslen(argv[1])));
     else app.wow_root = wow_find_root(app.arena);
     LocalFree(argv);
-    app.api_key = cf_api_key(app.arena);
     {
         Temp t = temp_begin(app.arena);
+        copy_cstr(app.cf_key, sizeof(app.cf_key), cf_api_key(t.arena, &app.cf_source));
         WagoKeySource src;
         String8 wk = wago_api_key_ex(t.arena, &src);
         app.wago_from_env = src == WAGO_KEY_ENV;

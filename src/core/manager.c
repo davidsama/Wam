@@ -185,7 +185,7 @@ static B32 folder_name_is_safe(String8 f)
 static B32 mgr_require_key(Mgr *m)
 {
     if (m->api_key.size) return 1;
-    return mgr_fail(m, "CurseForge needs an API key, and this build doesn't include one. Set CURSEFORGE_API_KEY, "
+    return mgr_fail(m, "CurseForge needs an API key, and this build doesn't include one. Add your own in Settings, "
                        "or install from GitHub / WoWInterface instead.");
 }
 
@@ -297,7 +297,7 @@ static Mgr *mgr_open(Arena *a, String8 addons_dir, String8 api_key)
     Mgr *m = push_struct(a, Mgr);
     m->arena = a;
     m->addons_dir = str8_copy(a, addons_dir);
-    m->api_key = api_key;
+    m->api_key = str8_copy(a, api_key);
     m->addons = push_array(a, MgrAddon, MGR_MAX_ADDONS);
     m->state_path = path_join(a, path_dirname(addons_dir), str8_lit("wam.json"));
     m->client = wow_client_version(addons_dir);
@@ -1012,7 +1012,7 @@ static B32 mgr_install_remote(Mgr *m, RemoteFile *rf, int depth)
     }
     mgr_status(m, "Downloading %.*s...", S8F(rf->name));
     mgr_progress(m, 0.05f);
-    HTTP_Result r = http_get_url(scratch.arena, rf->url, str8(0, 0), download_progress, &prog);
+    HTTP_Result r = cf_download(scratch.arena, m->api_key, rf->url, download_progress, &prog);
     if (!r.ok) { scratch_end(scratch); return mgr_fail(m, "download of %.*s failed: %.*s", S8F(rf->name), S8F(r.error)); }
     B32 ok = mgr_install_remote_bytes(m, rf, r.body, depth);
     scratch_end(scratch);

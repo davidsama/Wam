@@ -964,7 +964,7 @@ static B32 ui_text_edit(UI_TextBuf *t, WM_Event *e)
     return 0;
 }
 
-static void ui_text_field(Rect r, UI_TextBuf *t, String8 hint, B32 masked, V4 border)
+static void ui_text_field(Rect r, UI_TextBuf *t, String8 hint, B32 masked, B32 caret, V4 border)
 {
     F32 s = ui.scale;
     r_rect(r, ui.theme.bg, 6 * s, 0, 0.5f);
@@ -979,10 +979,10 @@ static void ui_text_field(Rect r, UI_TextBuf *t, String8 hint, B32 masked, V4 bo
     }
     F_Font *f = ui.font.normal;
     F32 ty = (r.y0 + r.y1 - f->line_height) * 0.5f;
-    F32 caret = r.x0 + 12 * s;
-    if (q.size) caret = f_draw_text(f, r.x0 + 12 * s, ty, q, ui.theme.text, r.x1 - r.x0 - 24 * s) + 1 * s;
+    F32 cx = r.x0 + 12 * s;
+    if (q.size) cx = f_draw_text(f, r.x0 + 12 * s, ty, q, ui.theme.text, r.x1 - r.x0 - 24 * s) + 1 * s;
     else f_draw_text(f, r.x0 + 16 * s, ty, hint, ui.theme.faint, r.x1 - r.x0 - 32 * s);
-    r_rect(rect(caret, ty + 2 * s, caret + ui_px(), ty + f->line_height - 2 * s), ui.theme.accent, 0, 0, 0);
+    if (caret) r_rect(rect(cx, ty + 2 * s, cx + ui_px(), ty + f->line_height - 2 * s), ui.theme.accent, 0, 0, 0);
 }
 
 //- Frames
