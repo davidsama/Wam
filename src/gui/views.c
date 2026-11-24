@@ -1341,9 +1341,14 @@ static B32 draw_detail(Rect p, SearchResult *e)
     if (rf.downloads > 0) str8_list_push(fa, &facts, str8_pushf(fa, "%.*s download%s", S8F(str8_thousands(fa, rf.downloads)), rf.downloads == 1 ? "" : "s"));
     if (rf.updated > 0) str8_list_push(fa, &facts, str8_pushf(fa, "updated %.*s", S8F(fmt_ago(fa, (U64)rf.updated))));
     if (rf.created > 0) str8_list_push(fa, &facts, str8_pushf(fa, "since %.*s", S8F(fmt_year(fa, rf.created))));
-    if (d && d->favorites > 0) str8_list_push(fa, &facts, str8_pushf(fa, "%.*s favorite%s", S8F(str8_thousands(fa, d->favorites)), d->favorites == 1 ? "" : "s"));
     if (facts.count) { y += ui_text_wrapped(ui.font.caption, x, y, w, str8_list_join(fa, &facts, str8_lit("  ·  ")), C_FAINT, p.y0, p.y1); }
-    if (d && d->version.size) y += ui_text_wrapped(ui.font.caption, x, y + 2 * s, w, str8_pushf(fa, "Latest: %.*s", S8F(d->version)), C_FAINT, p.y0, p.y1) + 2 * s;
+    // What only the details say: one line, with its place kept whether they're here yet or not (and whether
+    // they say it or not), so nothing below moves when they come.
+    String8List late = { 0 };
+    if (d && d->version.size) str8_list_push(fa, &late, str8_pushf(fa, "Latest: %.*s", S8F(d->version)));
+    if (d && d->favorites > 0) str8_list_push(fa, &late, str8_pushf(fa, "%.*s favorite%s", S8F(str8_thousands(fa, d->favorites)), d->favorites == 1 ? "" : "s"));
+    if (late.count) f_draw_text(ui.font.caption, x, y + 2 * s, str8_list_join(fa, &late, str8_lit("  ·  ")), C_FAINT, w);
+    y += ui.font.caption->line_height + 2 * s;
     y += 12 * s;
 
     // Actions: install (for an addon on two sources, also from the other), then the addon's pages.
