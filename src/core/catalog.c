@@ -681,13 +681,89 @@ static void cat_keep_wago(Catalog *c, String8 old_file, GameVersion cv)
 
 #define CHANGELOG_MAX KB(40)
 
+// Where an author takes support: the site's name and the page.
+#define SUPPORT_MAX 4
+typedef struct SupportLink { String8 name, url; } SupportLink;
+
+// A web link as https, the only kind wam opens (some sites still list http ones); empty if it isn't a web link.
+static String8 web_link(Arena *a, String8 url)
+{
+    if (str8_starts_with(url, str8_lit("https://"), 1)) return url;
+    if (str8_starts_with(url, str8_lit("http://"), 1)) return str8_pushf(a, "https://%.*s", S8F(str8_skip(url, 7)));
+    return str8(0, 0);
+}
+
+// The support site an https link goes to; empty for any other link. By its host: CurseForge's
+// numbers for the kinds of links aren't documented, and authors type the links themselves.
+static String8 support_site(String8 url)
+{
+    static struct { char *page, *name; } sites[] = { // at least one more character has to follow
+        { "patreon.com/", "Patreon" }, { "ko-fi.com/", "Ko-fi" }, { "buymeacoffee.com/", "Buy Me a Coffee" },
+        { "github.com/sponsors/", "GitHub Sponsors" }, { "paypal.me/", "PayPal" }, { "paypal.com/paypalme/", "PayPal" },
+        { "liberapay.com/", "Liberapay" }, { "opencollective.com/", "Open Collective" },
+    };
+    if (!str8_starts_with(url, str8_lit("https://"), 1)) return str8(0, 0);
+    String8 rest = str8_skip(url, 8);
+    if (str8_starts_with(rest, str8_lit("www."), 1)) rest = str8_skip(rest, 4);
+    if (str8_starts_with(rest, str8_lit("patreon.com/posts/"), 1)) return str8(0, 0); // an article
+    for (U64 i = 0; i < ArrayCount(sites); i += 1) {
+        String8 page = str8_cstring(sites[i].page);
+        if (rest.size > page.size && str8_starts_with(rest, page, 1)) return str8_cstring(sites[i].name);
+    }
+    // PayPal's donate pages and buttons ("/donate/?...", "/us/donate?...", "/cgi-bin/webscr?cmd=_donations..."),
+    // not the rest of its site.
+    if (str8_starts_with(rest, str8_lit("paypal.com/"), 1)) {
+        String8 path = str8_skip(rest, 11);
+        if (path.size > 3 && path.str[2] == '/') path = str8_skip(path, 3);
+        if (str8_starts_with(path, str8_lit("donate/?"), 1) || str8_starts_with(path, str8_lit("donate?"), 1)) return str8_lit("PayPal");
+        if (str8_starts_with(path, str8_lit("cgi-bin/webscr?"), 1) &&
+            (str8_find(path, 0, str8_lit("cmd=_donations"), 1) < path.size || str8_find(path, 0, str8_lit("cmd=_s-xclick"), 1) < path.size)) return str8_lit("PayPal");
+    }
+    if (str8_starts_with(rest, str8_lit("streamlabs.com/"), 1)) {
+        String8 path = str8_skip(rest, 15);
+        U64 n = 0;
+        while (n < path.size && path.str[n] != '/') n += 1;
+        path = str8_skip(path, n);
+        if (n && (str8_match(path, str8_lit("/tip"), 1) || str8_match(path, str8_lit("/tip/"), 1))) return str8_lit("Streamlabs");
+    }
+    return str8(0, 0);
+}
+
+// Adds a link, unless it's no web link, is there already, or (name empty) isn't to a known support site.
+static void support_push(Arena *a, SupportLink *v, U32 *count, String8 name, String8 url)
+{
+    url = web_link(a, str8_trim(url));
+    String8 site = support_site(url);
+    if (site.size) name = site;
+    if (!url.size || !name.size || *count >= SUPPORT_MAX) return;
+    for (U32 i = 0; i < *count; i += 1) if (str8_match(v[i].url, url, 1)) return;
+    v[*count] = (SupportLink){ name, url };
+    *count += 1;
+}
+
+// The links to support sites in a description, one per site (and none to a site the list has already):
+// authors often link to the same one twice, and only the source's own links can be several.
+static void support_from_text(Arena *a, SupportLink *v, U32 *count, Rich *text)
+{
+    for (RichBlock *k = text ? text->first : 0; k; k = k->next) {
+        for (RichSpan *sp = k->first; sp; sp = sp->next) {
+            String8 site = support_site(sp->link);
+            B32 have = !site.size;
+            for (U32 i = 0; i < *count; i += 1) have |= str8_match(v[i].name, site, 0);
+            if (!have) support_push(a, v, count, site, sp->link);
+        }
+    }
+}
+
 typedef struct AddonDetails {
     B32 ok;
     String8 error;
     String8 id, version;
     Rich *description, *changelog;               // 0 or empty: none (markup.c)
     String8 shots;                               // like SearchResult.shots
-    String8 website, source_url, issues_url, donate_url;
+    String8 website, source_url, issues_url;
+    SupportLink support[SUPPORT_MAX];
+    U32 support_count;
     S64 favorites;
 } AddonDetails;
 
@@ -721,6 +797,7 @@ static AddonDetails cat_details_get(Mgr *m, String8 id)
         d.website = json_str(json_get(links, "websiteUrl"));
         d.source_url = json_str(json_get(links, "sourceUrl"));
         d.issues_url = json_str(json_get(links, "issuesUrl"));
+        json_each(l, json_get(mod, "socialLinks")) support_push(a, d.support, &d.support_count, str8(0, 0), json_str(json_get(l, "url")));
         d.favorites = json_int(json_get(mod, "thumbsUpCount"));
         S64 file_id = mgr_pick_file(m, mod);
         if (file_id) {
@@ -778,7 +855,7 @@ static AddonDetails cat_details_get(Mgr *m, String8 id)
             d.website = json_str(json_get(item, "web_url"));
             d.source_url = json_str(json_get(item, "git_url"));
             d.issues_url = json_str(json_get(item, "ticket_url"));
-            d.donate_url = json_str(json_get(item, "donate_url"));
+            support_push(a, d.support, &d.support_count, str8_lit("Donate"), json_str(json_get(item, "donate_url")));
             String8 cl = json_str(json_get(item, "changelog_url"));
             if (str8_starts_with(cl, str8_lit("https://"), 1)) {
                 HTTP_Result r = http_get_url(a, cl, str8(0, 0), 0, 0);
@@ -802,6 +879,7 @@ static AddonDetails cat_details(Mgr *m, String8 id)
     m->all_shots = 1;
     AddonDetails d = cat_details_get(m, id);
     m->all_shots = 0;
+    support_from_text(m->arena, d.support, &d.support_count, d.description);
     return d;
 }
 

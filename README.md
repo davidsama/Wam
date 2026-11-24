@@ -49,7 +49,7 @@ away. Dependencies an addon requires on CurseForge are installed along with it.
 
 Select an addon to see its screenshots in a gallery (GIFs play; click one for full size), its description
 and latest changelog the way the author formatted them,
-download count and age, with links to its page, source code, issue tracker and donation page.
+download count and age, with links to its page, source code, issue tracker and where to support its author.
 
 ![The detail panel: the gallery, the formatted description, version and links](screenshots/details.png)
 

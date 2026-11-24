@@ -1204,10 +1204,91 @@ static String8 fmt_year(Arena *a, S64 unix_secs)
 // A small text button for a link; returns the x after it.
 static F32 detail_link(F32 x, F32 y, F32 h, String8 label, String8 url)
 {
-    if (!str8_starts_with(url, str8_lit("https://"), 1) && !str8_starts_with(url, str8_lit("http://"), 1)) return x;
+    url = web_link(ui.frame_arena, url);
+    if (!url.size) return x;
     F32 w = ui_button_width(label);
     if (ui_button(rect(x, y, x + w, y + h), label, C_TEXT, C_BUTTON, C_BUTTON_HI)) os_open_url(url);
     return x + w + 8 * ui.scale;
+}
+
+// The addon's support links, as buttons that open in the browser and say where they go first
+// (authors choose the links; one in a description may be someone else's). On CurseForge always its page too: only that has its Donate button.
+// Returns the height (0: nothing to show).
+static F32 draw_support(Rect p, F32 x, F32 y, F32 w, AddonDetails *d)
+{
+    F32 s = ui.scale, bh = 30 * s, gap = 8 * s, y0 = y;
+    SupportLink v[SUPPORT_MAX + 1];
+    U32 n = d->support_count;
+    for (U32 i = 0; i < n; i += 1) v[i] = d->support[i];
+    B32 cf_page = id_is(d->id, "cf:") && d->website.size;
+    if (cf_page) v[n++] = (SupportLink){ str8_lit("CurseForge page"), web_link(ui.frame_arena, d->website) };
+    if (!n) return 0;
+    f_draw_text(ui.font.bold, x, y, str8_lit("Support links"), ui.theme.heading, w);
+    y += ui.font.bold->line_height + 6 * s;
+    F32 bx = x;
+    for (U32 i = 0; i < n; i += 1) {
+        B32 page = cf_page && i == n - 1;
+        F32 bw = ui_button_width(v[i].name);
+        if (bx > x && bx + bw > x + w) { bx = x; y += bh + gap; }
+        Rect r = rect(bx, y, bx + bw, y + bh);
+        if (ui_button(r, str8_pushf(ui.frame_arena, "%.*s###support%u", S8F(v[i].name), i), C_TEXT, C_BUTTON, C_BUTTON_HI)) os_open_url(v[i].url);
+        if (ui_mouse_in(r) && ui_mouse_in(p)) {
+            String8 url = v[i].url;
+            ui_tooltip(r, page ? str8_lit("Its page has a Donate button if the author turned it on")
+                         : url.size > 90 ? str8_pushf(ui.frame_arena, "%.*s...", 87, url.str) : url);
+        }
+        bx += bw + gap;
+    }
+    return y + bh - y0;
+}
+
+// The Support button's menu, for an addon with several links.
+static void show_support_menu(void)
+{
+    DetailSnap *ds = details_find(str8_cstring(app.sel_id));
+    if (!ds || !ds->d.support_count) return;
+    // Copies: the menu runs a message loop, in which newer details may take the snapshot's place.
+    Temp scratch = scratch_begin(0);
+    String8 items[SUPPORT_MAX], urls[SUPPORT_MAX];
+    U32 n = ds->d.support_count;
+    for (U32 i = 0; i < n; i += 1) {
+        SupportLink *l = &ds->d.support[i];
+        // Where it goes, without a query ('&' would mean something in a menu).
+        String8 page = str8_skip(l->url, 8);
+        if (str8_starts_with(page, str8_lit("www."), 1)) page = str8_skip(page, 4);
+        U64 k = 0;
+        while (k < page.size && k < 48 && page.str[k] != '?' && page.str[k] != '&' && page.str[k] != '#') k += 1;
+        urls[i] = str8_copy(scratch.arena, l->url);
+        items[i] = str8_pushf(scratch.arena, "%.*s  (%.*s)", S8F(l->name), S8F(str8_prefix(page, k)));
+    }
+    S32 pick = wm_popup_menu(app.support_btn, items, n, -1);
+    if (pick >= 0 && pick < (S32)n) os_open_url(urls[pick]);
+    scratch_end(scratch);
+}
+
+// The button near the top: one link opens, several drop down a menu. Only its heart when there's
+// no room for more. Returns the x after it. It comes with the details, like the links after it.
+static F32 draw_support_button(Rect p, F32 x, F32 y, F32 h, F32 x1, AddonDetails *d)
+{
+    if (!d->support_count) return x;
+    F32 s = ui.scale;
+    String8 label = str8_lit("\xE2\x99\xA5 Support");
+    F32 w = ui_button_width(label);
+    if (x + w > x1) { label = str8_lit("\xE2\x99\xA5###\xE2\x99\xA5 Support"); w = ui_button_width(label); }
+    Rect r = rect(x, y, x + w, y + h);
+    if (ui_button(r, label, C_TEXT, C_BUTTON, C_BUTTON_HI)) {
+        app.support_btn = r;
+        if (d->support_count == 1) os_open_url(d->support[0].url);
+        else wm_defer(show_support_menu);
+    }
+    if (ui_mouse_in(r) && ui_mouse_in(p)) {
+        String8List names = { 0 };
+        for (U32 i = 0; i < d->support_count; i += 1) str8_list_push(ui.frame_arena, &names, d->support[i].name);
+        String8 url = d->support[0].url;
+        ui_tooltip(r, d->support_count > 1 ? str8_pushf(ui.frame_arena, "Support links on the addon's page: %.*s", S8F(str8_list_join(ui.frame_arena, &names, str8_lit(", "))))
+                     : url.size > 90 ? str8_pushf(ui.frame_arena, "%.*s...", 87, url.str) : url);
+    }
+    return x + w + 8 * s;
 }
 
 // The screenshots: one shown whole, and a filmstrip of them all to pick from under it. Returns the height.
@@ -1381,11 +1462,11 @@ static B32 draw_detail(Rect p, SearchResult *e)
             bx += iw + 12 * s;
         }
     }
-    bx = detail_link(bx, y, bh, str8_lit("Open page"), d && d->website.size ? d->website : e->website);
+    bx = detail_link(bx, y, bh, str8_lit("Page"), d && d->website.size ? d->website : e->website);
     if (d) {
+        bx = draw_support_button(p, bx, y, bh, x + w, d);
         bx = detail_link(bx, y, bh, str8_lit("Source"), d->source_url);
         bx = detail_link(bx, y, bh, str8_lit("Issues"), d->issues_url);
-        bx = detail_link(bx, y, bh, str8_lit("Donate"), d->donate_url);
     }
     y += bh + 16 * s;
     ui_divider(x, x + w, y);
@@ -1422,6 +1503,8 @@ static B32 draw_detail(Rect p, SearchResult *e)
     } else if (!d->ok) {
         y += ui_text_wrapped(ui.font.caption, x, y, w, d->error, C_FAINT, p.y0, p.y1) + 8 * s;
     } else {
+        F32 support_h = draw_support(p, x, y, w, d);
+        if (support_h > 0) y += support_h + 16 * s;
         String8 picture = { 0 };
         if (!rich_empty(d->description)) {
             f_draw_text(ui.font.bold, x, y, str8_lit("Description"), ui.theme.heading, w);

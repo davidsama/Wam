@@ -6,6 +6,11 @@
   a key, so this is optional. It's tried before it's saved, and kept encrypted for your Windows user.
 - **CurseForge downloads** send the API key, which CurseForge has announced it will require.
 - **Settings scrolls** when the window is too low to show it all.
+- **Support an addon's author**: a Support button near the top of the details when the addon's page links
+  to Patreon, PayPal, Ko-fi, GitHub Sponsors or the like, and its support links further down. CurseForge
+  addons link to their page too, which may have a Donate button.
+- **Links that did nothing**: details links listed as `http://` (such as Donate on ElvUI and Tukui) open
+  again, over https.
 
 ## 1.4.0
 

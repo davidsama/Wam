@@ -496,6 +496,39 @@ static void test_wago(Arena *a)
     refused = cf_rejected_error(cf_builtin_key(a));
     CHECK(str8_find(refused, 0, str8_lit("built into this wam"), 0) < refused.size);
 
+    // Support links: known sites by host, https only, no duplicates.
+    CHECK(str8_match(support_site(str8_lit("https://www.patreon.com/x")), str8_lit("Patreon"), 0));
+    CHECK(str8_match(support_site(str8_lit("https://github.com/sponsors/Tuller")), str8_lit("GitHub Sponsors"), 0));
+    CHECK(!support_site(str8_lit("https://github.com/Tuller/Bagnon")).size);
+    CHECK(!support_site(str8_lit("https://patreon.com.example.com/x")).size && !support_site(str8_lit("https://patreon.com@example.com/x")).size);
+    CHECK(!support_site(str8_lit("https://notpatreon.com/x")).size && !support_site(str8_lit("http://patreon.com/x")).size);
+    CHECK(str8_match(web_link(a, str8_lit("http://tukui.org/support")), str8_lit("https://tukui.org/support"), 0));
+    CHECK(!web_link(a, str8_lit("file:///c:/x")).size && !web_link(a, str8_lit("javascript:x")).size && !web_link(a, str8(0, 0)).size);
+    CHECK(!support_site(str8_lit("https://www.patreon.com/")).size && !support_site(str8_lit("https://www.patreon.com/posts/news-1")).size);
+    CHECK(support_site(str8_lit("https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=X")).size);
+    CHECK(support_site(str8_lit("https://www.paypal.com/donate/?hosted_button_id=X")).size && support_site(str8_lit("https://paypal.com/us/donate?x=1")).size);
+    CHECK(support_site(str8_lit("https://www.paypal.me/jaliborc")).size && !support_site(str8_lit("https://www.paypal.com/signin")).size);
+    CHECK(support_site(str8_lit("https://streamlabs.com/nnoggie/tip")).size && !support_site(str8_lit("https://streamlabs.com/pricing")).size);
+    Rich *said = rich_parse(a, str8_lit("<a href=\"/linkout?remoteUrl=https%253a%252f%252fwww.paypal.me%252fjaliborc\">P</a> <a href=\"https://www.patreon.com/one\"><img src=\"https://i/x.png\"></a>"
+        "<a href=\"https://www.patreon.com/two\">again</a> <a href=\"https://www.ccalliance.org/donate\">donate</a> https://ko-fi.com/text"), MARKUP_HTML, RICH_TEXT_MAX);
+    SupportLink from[SUPPORT_MAX]; U32 nfrom = 0;
+    support_from_text(a, from, &nfrom, said);
+    CHECK(nfrom >= 2 && str8_match(from[0].url, str8_lit("https://www.paypal.me/jaliborc"), 0) && str8_match(from[1].url, str8_lit("https://www.patreon.com/one"), 0));
+    for (U32 i = 0; i < nfrom; i += 1) CHECK(!str8_match(from[i].url, str8_lit("https://www.patreon.com/two"), 0) && str8_find(from[i].url, 0, str8_lit("ccalliance"), 0) >= from[i].url.size);
+    nfrom = 0;
+    support_push(a, from, &nfrom, str8(0, 0), str8_lit("https://www.patreon.com/own"));
+    support_from_text(a, from, &nfrom, said); // the source's own link to a site comes before the text's
+    CHECK(nfrom >= 2 && str8_match(from[0].url, str8_lit("https://www.patreon.com/own"), 0) && str8_match(from[1].name, str8_lit("PayPal"), 0));
+    support_from_text(a, from, &nfrom, 0);
+    SupportLink sup[SUPPORT_MAX]; U32 nsup = 0;
+    support_push(a, sup, &nsup, str8(0, 0), str8_lit("http://ko-fi.com/smoergi"));
+    support_push(a, sup, &nsup, str8(0, 0), str8_lit("https://ko-fi.com/smoergi"));
+    support_push(a, sup, &nsup, str8(0, 0), str8_lit("https://discord.gg/x"));
+    CHECK(nsup == 1 && str8_match(sup[0].name, str8_lit("Ko-fi"), 0) && str8_match(sup[0].url, str8_lit("https://ko-fi.com/smoergi"), 0));
+    support_push(a, sup, &nsup, str8_lit("Donate"), str8_lit("http://tukui.org/support"));
+    for (U32 i = 0; i < 9; i += 1) support_push(a, sup, &nsup, str8(0, 0), str8_pushf(a, "https://patreon.com/%u", i));
+    CHECK(nsup == SUPPORT_MAX && str8_match(sup[1].name, str8_lit("Donate"), 0));
+
     // Downloads: the key goes only to the CDN host that asks for it, on HTTPS's own port.
     CHECK(cf_cdn_wants_key(str8_lit("https://edge.forgecdn.net/files/1/2/a.zip")));
     CHECK(cf_cdn_wants_key(str8_lit("https://EDGE.forgecdn.net/files/1/2/a b.zip")));

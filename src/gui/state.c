@@ -214,6 +214,7 @@ typedef struct App {
     U32 cat_counts[CAT_CATEGORY_COUNT]; // per category, among what the other filters show
     U32 sub_counts[CAT_SUBCATEGORY_COUNT];
     U64 cat_any;               // of those, how many (for "All categories")
+    Rect support_btn;       // where the Support button's menu drops down from
     Rect sort_btn, cat_btn, src_btn; // where the filters' menus drop down from
     U32 src_count[SRC_COUNT];  // catalog entries per source (which chips to show)
     U32 link_cat_version; Snapshot *link_snap; S32 link_snap_seq; B32 link_valid; // what cat_link last paired (see browse_link)
