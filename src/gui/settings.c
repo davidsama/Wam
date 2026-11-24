@@ -297,7 +297,8 @@ static void draw_settings(void)
 
     //- CurseForge
     y = settings_heading(x, y, w, "CurseForge",
-                         "Finding, installing and updating CurseForge addons needs your own API key, from console.curseforge.com.");
+                         "Finding, installing and updating CurseForge addons needs an API key. wam has applied for access and doesn't "
+                         "include one for now; if you already have a key, you can add it here.");
     if (app.cf_source == CF_KEY_ENV) {
         f_draw_text(ui.font.normal, x, y, str8_lit("Set by the CURSEFORGE_API_KEY environment variable"), C_GREEN, w);
         y += ui.font.normal->line_height + 4 * s;

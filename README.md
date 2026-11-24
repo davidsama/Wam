@@ -101,8 +101,7 @@ framework to load.
 
 1. [Download `wam.exe`](../../releases/latest) and put it wherever you like.
 2. Run it. wam finds your World of Warcraft install and lists your addons.
-3. For CurseForge addons, paste your own CurseForge API key in **Settings** (the cog at the top).
-4. Open **Get addons**, pick something, press **Install**.
+3. Open **Get addons**, pick something, press **Install**.
 
 **Windows says "Windows protected your PC"?** New programs from small developers can get this
 SmartScreen warning until enough people have run them. Click **More info**, then **Run anyway**.
@@ -116,8 +115,8 @@ certutil -hashfile wam.exe SHA256
 ### Requirements
 
 - Windows 10 (version 1803 or later) or Windows 11, 64-bit.
-- CurseForge: finding, installing and updating its addons needs your own API key, from the
-  [CurseForge developer console](https://console.curseforge.com).
+- CurseForge: finding, installing and updating its addons needs an API key. wam has
+  applied for access and doesn't include a key for now; if you already have one, you can add it in **Settings**.
 - Wago: searching and installing from Wago needs your own Wago API key, which comes with a Wago
   subscription. Paste it in **Settings** (the cog at the top). The other sources work without an account.
 - Addons whose authors allow downloads only from CurseForge's site open that page in a small window

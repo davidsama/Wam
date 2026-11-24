@@ -2,8 +2,8 @@
 
 ## 1.5.0
 
-- **CurseForge now needs your own API key**: wam no longer comes with one. Get yours at
-  console.curseforge.com and paste it in Settings; it's tried before it's saved, and kept encrypted for your
+- **CurseForge needs an API key**: wam has applied for access and doesn't include a key for now. If you
+  already have one, you can add it in Settings; it's tried before it's saved, and kept encrypted for your
   Windows user. Without it, your CurseForge addons stay installed but aren't checked for updates, and
   Get addons doesn't list CurseForge. The other sources work as before.
 - **CurseForge downloads** send the API key, which CurseForge has announced it will require.
